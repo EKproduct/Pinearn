@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, Link2 } from "lucide-react";
+import { ChevronLeft, Link2, Plus } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
@@ -25,6 +25,7 @@ export const Route = createFileRoute("/_authenticated/pins_/attach")({
 type Tab = "pins" | "boards";
 
 function AttachPage() {
+  const navigate = useNavigate();
   const search = Route.useSearch();
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [dialogPinId, setDialogPinId] = useState<string | null>(null);
@@ -152,7 +153,11 @@ function AttachPage() {
             </p>
           </div>
           {activeBoard.pins.length === 0 ? (
-            <EmptyBlock text="No pins in this board." />
+            <EmptyBlock
+              text="No pins in this board."
+              actionLabel="Create pin"
+              onAction={() => navigate({ to: "/pins/create" })}
+            />
           ) : (
             <PinGrid
               pins={activeBoard.pins}
@@ -163,7 +168,11 @@ function AttachPage() {
         </div>
       ) : tab === "pins" ? (
         pins.length === 0 ? (
-          <EmptyBlock text="No pins yet." />
+          <EmptyBlock
+            text="No pins yet."
+            actionLabel="Create pin"
+            onAction={() => navigate({ to: "/pins/create" })}
+          />
         ) : (
           <PinGrid
             pins={pins}
@@ -223,10 +232,26 @@ function TabButton({
   );
 }
 
-function EmptyBlock({ text }: { text: string }) {
+function EmptyBlock({
+  text,
+  actionLabel,
+  onAction,
+}: {
+  text: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
     <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center text-sm text-muted-foreground">
-      {text}
+      <p>{text}</p>
+      {actionLabel && onAction && (
+        <button
+          onClick={onAction}
+          className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow"
+        >
+          <Plus className="h-3.5 w-3.5" /> {actionLabel}
+        </button>
+      )}
     </div>
   );
 }

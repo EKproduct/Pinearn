@@ -288,64 +288,41 @@ function PinsPage() {
                       loading="lazy"
                     />
                   )}
-                  {(p.status !== "live" || p.product_id) && (
-                    <span
-                      className="absolute right-2 top-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide backdrop-blur"
-                      style={{
-                        background:
-                          p.status === "live"
-                            ? "oklch(0.72 0.16 45 / 0.95)"
-                            : p.status === "scheduled"
-                              ? "oklch(0.72 0.14 85 / 0.95)"
-                              : "oklch(1 0 0 / 0.9)",
-                        color: p.status === "draft" ? "oklch(0.28 0.015 45)" : "oklch(1 0 0)",
-                      }}
-                    >
-                      {p.status}
-                    </span>
-                  )}
+                  <span
+                    className="absolute right-2 top-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide backdrop-blur"
+                    style={{
+                      background:
+                        p.status === "live"
+                          ? "oklch(0.72 0.16 45 / 0.95)"
+                          : p.status === "scheduled"
+                            ? "oklch(0.72 0.14 85 / 0.95)"
+                            : "oklch(1 0 0 / 0.9)",
+                      color: p.status === "draft" ? "oklch(0.28 0.015 45)" : "oklch(1 0 0)",
+                    }}
+                  >
+                    {p.status}
+                  </span>
                 </div>
                 <div className="p-3">
                   <h3 className="hidden">{p.title}</h3>
-                  {p.status === "live" && (() => {
-                    const ctr = p.impressions > 0 ? ((p.clicks / p.impressions) * 100).toFixed(1) : "0.0";
-                    return (
-                      <div className="mt-2 grid grid-cols-3 gap-1 text-[11px]">
-                        <div>
-                          <div className="text-muted-foreground">{p.clicks}</div>
-                          <div className="text-muted-foreground/70">clicks</div>
-                        </div>
-                        <div className="text-center">
-                          <div className="font-semibold text-primary">{ctr}%</div>
-                          <div className="text-muted-foreground/70">CTR</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-semibold text-primary">
-                            ₹{(p.earnings_cents / 100).toFixed(0)}
-                          </div>
-                          <div className="text-muted-foreground/70">earnings</div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                  <div className="mt-2 flex gap-1.5">
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setOpenPinId(p.id);
                       }}
-                      className="grid h-7 w-7 place-items-center rounded-lg bg-surface-2 text-muted-foreground hover:text-foreground"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-full bg-surface-2 px-2 py-2 text-xs font-semibold text-foreground hover:bg-surface-2/70"
                     >
-                      <Pencil className="h-3 w-3" />
+                      <Pencil className="h-3.5 w-3.5" /> Edit
                     </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         if (confirm(`Delete "${p.title}"?`)) remove.mutate(p.id);
                       }}
-                      className="grid h-7 w-7 place-items-center rounded-lg bg-surface-2 text-muted-foreground hover:text-destructive"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-full bg-destructive/10 px-2 py-2 text-xs font-semibold text-destructive hover:bg-destructive/15"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
                     </button>
                   </div>
                 </div>
