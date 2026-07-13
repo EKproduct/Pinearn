@@ -469,7 +469,21 @@ function StorefrontPage() {
   const backgroundUrl = storefront.background_image_url ?? DEFAULT_BACKGROUND;
 
   return (
-    <AppShell title="My Store" backButton hideNotifications>
+    <AppShell
+      title="My Store"
+      backButton
+      hideNotifications
+      inlineActions
+      actions={
+        <Link
+          to="/s/$slug"
+          params={{ slug: storefront.slug }}
+          className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-surface-2"
+        >
+          <ExternalLink className="h-3.5 w-3.5" /> Preview
+        </Link>
+      }
+    >
       {/* Background band */}
       <div className="relative -mx-4 mb-4 h-40 overflow-hidden sm:-mx-6">
         <div
@@ -556,13 +570,6 @@ function StorefrontPage() {
           >
             <Pencil className="h-3.5 w-3.5" /> Edit
           </button>
-          <Link
-            to="/s/$slug"
-            params={{ slug: storefront.slug }}
-            className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-2"
-          >
-            <ExternalLink className="h-3.5 w-3.5" /> Preview
-          </Link>
           <Popover>
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-2">
@@ -832,6 +839,10 @@ function StorefrontPage() {
           collections={collections}
           onCancel={() => setShowNewBoard(false)}
           onCreate={(v) => createBoard.mutate(v)}
+          onCreateCollection={() => {
+            setShowNewBoard(false);
+            setShowNewCollection(true);
+          }}
           pending={createBoard.isPending}
         />
       )}
@@ -1307,11 +1318,13 @@ function NewBoardDialog({
   collections,
   onCancel,
   onCreate,
+  onCreateCollection,
   pending,
 }: {
   collections: Collection[];
   onCancel: () => void;
   onCreate: (v: { name: string; coverFile: File | null; collectionIds: string[] }) => void;
+  onCreateCollection: () => void;
   pending: boolean;
 }) {
   const [name, setName] = useState("");
@@ -1363,9 +1376,16 @@ function NewBoardDialog({
         <div className="mt-4">
           <p className="mb-2 text-xs font-medium text-muted-foreground">Collections in this board</p>
           {collections.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
-              Create a collection first.
-            </p>
+            <div className="rounded-lg border border-dashed border-border bg-surface-2/40 p-4 text-center">
+              <p className="text-xs text-muted-foreground">You don't have any collections yet.</p>
+              <button
+                type="button"
+                onClick={onCreateCollection}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-xs font-medium text-primary-foreground shadow-glow"
+              >
+                <FolderPlus className="h-3.5 w-3.5" /> Make a collection first
+              </button>
+            </div>
           ) : (
             <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
               {collections.map((c) => {

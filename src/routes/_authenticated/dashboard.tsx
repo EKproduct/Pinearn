@@ -8,13 +8,11 @@ import { useEffect, useState } from "react";
 import {
   IndianRupee,
   MousePointerClick,
-  Wand2,
+  Coins,
+  ImagePlus,
   Link2,
   Link as LinkIcon,
-  BarChart3,
-  Layers,
-  Sparkles,
-  Users,
+  Store,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -29,46 +27,32 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 const SLIDES = [
   {
-    icon: Wand2,
-    title: "Auto-format any post into a pin",
-    body: "Drop an Instagram, TikTok, or YouTube link — Pinearn crops, resizes and writes the caption in seconds.",
-    cta: { label: "Open pins", to: "/pins" as const },
+    icon: Coins,
+    title: "Monetise any pin",
+    body: "Every pin is a shelf waiting to sell. Attach a product in one tap and start earning on every click.",
+    cta: { label: "Attach products", to: "/pins/attach" as const },
     gradient: "from-rose-100 via-rose-50 to-orange-50",
   },
   {
-    icon: Link2,
-    title: "One storefront, every pin",
-    body: "Attach affiliate links and collections once. Every new pin inherits them automatically.",
-    cta: { label: "Open store", to: "/storefront" as const },
+    icon: ImagePlus,
+    title: "Create pin",
+    body: "Drop a photo or reel — Pinearn crops, formats, and gets it publish-ready in seconds.",
+    cta: { label: "Create pin", to: "/pins/create" as const },
     gradient: "from-orange-100 via-amber-50 to-rose-50",
   },
   {
-    icon: BarChart3,
-    title: "See what actually earns",
-    body: "Track impressions, CTR, conversions and revenue — sliced by pin, product, or date range.",
-    cta: { label: "View analytics", to: "/analytics" as const },
+    icon: Link2,
+    title: "Create affiliate link",
+    body: "Paste any product URL and get a trackable link ready for pins, stories, or DMs.",
+    cta: { label: "Create link", onClick: openAffiliateLinkDialog },
     gradient: "from-red-50 via-rose-100 to-pink-50",
   },
   {
-    icon: Layers,
-    title: "Publish 30 pins in one flow",
-    body: "Queue formatted pins with the right external URLs. Batch schedule at your best hours.",
-    cta: { label: "Manage pins", to: "/pins" as const },
-    gradient: "from-amber-100 via-rose-50 to-red-50",
-  },
-  {
-    icon: Sparkles,
-    title: "Remix what's trending",
-    body: "See which formats are exploding across the Pinearn network — before your niche saturates.",
-    cta: { label: "Explore trends", to: "/pins" as const },
+    icon: Store,
+    title: "Create storefront",
+    body: "One link, every product. Build a shoppable storefront every new pin can point to.",
+    cta: { label: "Open storefront", to: "/storefront" as const },
     gradient: "from-pink-50 via-rose-100 to-orange-100",
-  },
-  {
-    icon: Users,
-    title: "Learn from top earners",
-    body: "Playbooks, teardowns, and Q&As from creators earning ₹5L+ monthly on Pinterest.",
-    cta: { label: "Join circle", to: "/storefront" as const },
-    gradient: "from-orange-50 via-red-50 to-rose-100",
   },
 ] as const;
 
@@ -89,12 +73,21 @@ function FeatureCarousel() {
               {s.title}
             </h3>
             <p className="mt-2 line-clamp-2 max-w-md text-sm text-foreground/70">{s.body}</p>
-            <Link
-              to={s.cta.to}
-              className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
-            >
-              {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
+            {"to" in s.cta ? (
+              <Link
+                to={s.cta.to}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
+              >
+                {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            ) : (
+              <button
+                onClick={s.cta.onClick}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
+              >
+                {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <div className="hidden shrink-0 sm:block">
             <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/70 text-primary shadow-sm backdrop-blur">

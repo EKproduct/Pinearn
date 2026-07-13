@@ -36,6 +36,7 @@ export function AppShell({
   title,
   subtitle,
   actions,
+  inlineActions,
   showBack,
   backButton,
   hideNotifications,
@@ -46,6 +47,7 @@ export function AppShell({
   title: string;
   subtitle?: string;
   actions?: ReactNode;
+  inlineActions?: boolean;
   showBack?: boolean;
   backButton?: boolean;
   hideNotifications?: boolean;
@@ -198,14 +200,22 @@ export function AppShell({
               </div>
               {!hideHeaderActions && (
                 <div className="flex items-center gap-2">
-                  <div className="hidden sm:flex sm:items-center sm:gap-2">{actions}</div>
+                  <div
+                    className={
+                      inlineActions
+                        ? "flex items-center gap-2"
+                        : "hidden sm:flex sm:items-center sm:gap-2"
+                    }
+                  >
+                    {actions}
+                  </div>
                   {!hideNotifications && <NotificationsMenu />}
                 </div>
               )}
             </div>
 
             {/* Actions row on mobile */}
-            {actions && (
+            {actions && !inlineActions && (
               <div className="no-scrollbar flex items-center gap-2 overflow-x-auto border-t border-border/60 px-4 py-2 sm:hidden">
                 {actions}
               </div>
