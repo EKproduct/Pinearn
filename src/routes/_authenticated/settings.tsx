@@ -1,0 +1,265 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { AppShell } from "@/components/app-shell";
+import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  Bell,
+  Moon,
+  Sun,
+  Trash2,
+  LogOut,
+  ShieldCheck,
+  Loader2,
+  Link2,
+  Link2Off,
+} from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/settings")({
+  component: SettingsPage,
+});
+
+type Prefs = {
+  notifications: boolean;
+  weeklyDigest: boolean;
+  theme: "light" | "dark";
+};
+
+const DEFAULTS: Prefs = { notifications: true, weeklyDigest: true, theme: "light" };
+
+function loadPrefs(): Prefs {
+  try {
+    const raw = localStorage.getItem("pinearn.prefs");
+    if (!raw) return DEFAULTS;
+    return { ...DEFAULTS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULTS;
+  }
+}
+
+function SettingsPage() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [userId, setUserId] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [pinterestUsername, setPinterestUsername] = useState("");
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULTS);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setPrefs(loadPrefs());
+    (async () => {
+      const { data: u } = await supabase.auth.getUser();
+      if (!u.user) return;
+      setUserId(u.user.id);
+      setEmail(u.user.email ?? "");
+      const { data: p } = await supabase
+        .from("profiles")
+        .select("pinterest_connected, pinterest_username")
+        .eq("id", u.user.id)
+        .maybeSingle();
+      if (p) {
+        setConnected(!!p.pinterest_connected);
+        setPinterestUsername(p.pinterest_username ?? "");
+      }
+    })();
+  }, []);
+
+  function update(patch: Partial<Prefs>) {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    localStorage.setItem("pinearn.prefs", JSON.stringify(next));
+    if (patch.theme) {
+      document.documentElement.classList.toggle("dark", patch.theme === "dark");
+    }
+    toast.success("Preferences saved");
+  }
+
+  async function togglePinterest() {
+    if (!userId) return;
+    setBusy(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({ pinterest_connected: !connected })
+      .eq("id", userId);
+    setBusy(false);
+    if (error) return toast.error(error.message);
+    setConnected(!connected);
+    toast.success(!connected ? "Pinterest connected" : "Pinterest disconnected");
+  }
+
+  async function signOut() {
+    await qc.cancelQueries();
+    qc.clear();
+    await supabase.auth.signOut();
+    navigate({ to: "/auth", replace: true });
+  }
+
+  async function deleteAccount() {
+    if (!userId) return;
+    const ok = window.confirm(
+      "Delete your account? This clears your profile data and signs you out.",
+    );
+    if (!ok) return;
+    setBusy(true);
+    await supabase.from("profiles").update({
+      display_name: null,
+      avatar_url: null,
+      pinterest_connected: false,
+      pinterest_username: null,
+      onboarding_completed: false,
+    }).eq("id", userId);
+    setBusy(false);
+    toast.success("Account data cleared");
+    await signOut();
+  }
+
+  return (
+    <AppShell title="Settings">
+      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6 md:px-0">
+        <Section title="Account">
+          <Row label={email || "Signed in"} sub="Signed in with phone OTP">
+            <ShieldCheck className="h-4 w-4 text-accent" />
+          </Row>
+        </Section>
+
+        <Section title="Pinterest">
+          <Row
+            label={connected ? `Connected${pinterestUsername ? ` · @${pinterestUsername}` : ""}` : "Not connected"}
+            sub={connected ? "Boards and pins sync automatically." : "Connect to sync your boards & pins."}
+          >
+            <button
+              onClick={togglePinterest}
+              disabled={busy}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:opacity-60 ${
+                connected
+                  ? "border border-border bg-surface hover:bg-surface-2"
+                  : "bg-gradient-primary text-primary-foreground shadow-glow"
+              }`}
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : connected ? <Link2Off className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
+              {connected ? "Disconnect" : "Connect"}
+            </button>
+          </Row>
+        </Section>
+
+        <Section title="Notifications">
+          <Toggle
+            icon={Bell}
+            label="Push notifications"
+            sub="Sales, clicks, and new followers"
+            checked={prefs.notifications}
+            onChange={(v) => update({ notifications: v })}
+          />
+          <Toggle
+            icon={Bell}
+            label="Weekly digest email"
+            sub="Every Monday at 9am"
+            checked={prefs.weeklyDigest}
+            onChange={(v) => update({ weeklyDigest: v })}
+          />
+        </Section>
+
+        <Section title="Appearance">
+          <Toggle
+            icon={prefs.theme === "dark" ? Moon : Sun}
+            label="Dark mode"
+            sub="Reduce eye strain in low light"
+            checked={prefs.theme === "dark"}
+            onChange={(v) => update({ theme: v ? "dark" : "light" })}
+          />
+        </Section>
+
+        <Section title="Danger zone">
+          <button
+            onClick={signOut}
+            className="flex w-full items-center gap-3 rounded-xl border border-border bg-surface p-3 text-sm font-medium hover:bg-surface-2"
+          >
+            <LogOut className="h-4 w-4" /> Sign out
+          </button>
+          <button
+            onClick={deleteAccount}
+            disabled={busy}
+            className="flex w-full items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm font-medium text-destructive hover:bg-destructive/15 disabled:opacity-60"
+          >
+            <Trash2 className="h-4 w-4" /> Delete account
+          </button>
+        </Section>
+      </div>
+    </AppShell>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-border bg-surface/85 p-4 shadow-elevate">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+        {title}
+      </div>
+      <div className="space-y-2">{children}</div>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-surface-2 p-3">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium">{label}</div>
+        {sub && <div className="truncate text-xs text-muted-foreground">{sub}</div>}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Toggle({
+  icon: Icon,
+  label,
+  sub,
+  checked,
+  onChange,
+}: {
+  icon: any;
+  label: string;
+  sub?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className="flex w-full items-center gap-3 rounded-xl bg-surface-2 p-3 text-left"
+    >
+      <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">{label}</div>
+        {sub && <div className="truncate text-xs text-muted-foreground">{sub}</div>}
+      </div>
+      <div
+        className={`relative h-6 w-11 rounded-full transition ${
+          checked ? "bg-primary" : "bg-border"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+            checked ? "left-[22px]" : "left-0.5"
+          }`}
+        />
+      </div>
+    </button>
+  );
+}

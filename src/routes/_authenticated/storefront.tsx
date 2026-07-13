@@ -1,0 +1,1828 @@
+import { createFileRoute, Link, useNavigate as useRouterNavigate } from "@tanstack/react-router";
+import { AppShell } from "@/components/app-shell";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { supabase } from "@/integrations/supabase/client";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Trash2,
+  Loader2,
+  FolderPlus,
+  Image as ImageIcon,
+  Pencil,
+  ExternalLink,
+  Copy,
+  Sparkles,
+  Layers,
+  Plus,
+  Check,
+  Camera,
+  ArrowRightLeft,
+  Share2,
+  MessageCircle,
+  Mail,
+  Send,
+  Facebook,
+  Twitter,
+  GripVertical,
+  X,
+} from "lucide-react";
+import { Reorder, motion } from "framer-motion";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { toast } from "sonner";
+import { importPinterestBoards } from "@/lib/pinterest.functions";
+import { PinterestSyncModal } from "@/components/pinterest-sync-modal";
+
+const DEFAULT_BACKGROUND =
+  "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
+
+type StorefrontSearch = { collection?: string };
+
+export const Route = createFileRoute("/_authenticated/storefront")({
+  component: StorefrontPage,
+  validateSearch: (search: Record<string, unknown>): StorefrontSearch => ({
+    collection: typeof search.collection === "string" ? search.collection : undefined,
+  }),
+});
+
+type Storefront = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  brand_color: string | null;
+  background_image_url: string | null;
+};
+
+type Collection = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  cover_color: string | null;
+  cover_image_url: string | null;
+  source: string;
+  position: number;
+};
+
+type Pin = {
+  id: string;
+  title: string;
+  image_url: string | null;
+  collection_id: string | null;
+  external_url: string | null;
+};
+
+type Board = {
+  id: string;
+  name: string;
+  cover_image_url: string | null;
+  position: number;
+};
+
+type BoardCollection = { board_id: string; collection_id: string };
+
+function slugify(s: string) {
+  return (
+    s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "board"
+  );
+}
+
+async function uploadCover(file: File, folder: string): Promise<string> {
+  const { data: userRes } = await supabase.auth.getUser();
+  if (!userRes.user) throw new Error("Not signed in");
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `${userRes.user.id}/${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage
+    .from("storefront-covers")
+    .upload(path, file, { upsert: true, contentType: file.type });
+  if (error) throw error;
+  const { data: signed, error: signErr } = await supabase.storage
+    .from("storefront-covers")
+    .createSignedUrl(path, 60 * 60 * 24 * 365 * 10);
+  if (signErr || !signed) throw signErr ?? new Error("Failed to sign URL");
+  return signed.signedUrl;
+}
+
+function StorefrontPage() {
+  const qc = useQueryClient();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const routerNavigate = useRouterNavigate();
+  const [tab, setTab] = useState<"collections" | "boards">("collections");
+  const [reorderOpen, setReorderOpen] = useState(false);
+  const [showNewCollection, setShowNewCollection] = useState(false);
+  const [showNewBoard, setShowNewBoard] = useState(false);
+  const [showEditStore, setShowEditStore] = useState(false);
+  const [coverPickerFor, setCoverPickerFor] = useState<string | null>(null);
+  const [viewCollectionFor, setViewCollectionFor] = useState<string | null>(search.collection ?? null);
+  const [viewBoardFor, setViewBoardFor] = useState<string | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const bgInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (search.collection) setViewCollectionFor(search.collection);
+  }, [search.collection]);
+
+  const importBoards = useServerFn(importPinterestBoards);
+
+  const { data: profile } = useQuery({
+    queryKey: ["me-profile"],
+    queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      if (!userRes.user) return null;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id,avatar_url,display_name")
+        .eq("id", userRes.user.id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: storefront, isLoading: sfLoading } = useQuery({
+    queryKey: ["my-storefront"],
+    queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      if (!userRes.user) return null;
+      const { data, error } = await supabase
+        .from("storefronts")
+        .select("id,name,slug,description,brand_color,background_image_url")
+        .eq("user_id", userRes.user.id)
+        .order("is_default", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data as Storefront | null;
+    },
+  });
+
+  const { data: collections = [] } = useQuery({
+    queryKey: ["collections", storefront?.id],
+    enabled: !!storefront,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("collections")
+        .select("id,name,slug,description,cover_color,cover_image_url,source,position")
+        .eq("storefront_id", storefront!.id)
+        .is("hidden_from_storefront_at", null)
+        .order("position", { ascending: true });
+      if (error) throw error;
+      return data as Collection[];
+    },
+  });
+
+  const { data: pins = [] } = useQuery({
+    queryKey: ["storefront-pins", storefront?.id],
+    enabled: !!storefront,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("pins")
+        .select("id,title,image_url,collection_id,external_url")
+        .eq("storefront_id", storefront!.id)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data as Pin[];
+    },
+  });
+
+  const { data: boards = [] } = useQuery({
+    queryKey: ["boards", storefront?.id],
+    enabled: !!storefront,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("boards")
+        .select("id,name,cover_image_url,position")
+        .eq("storefront_id", storefront!.id)
+        .is("hidden_from_storefront_at", null)
+        .order("position", { ascending: true });
+      if (error) throw error;
+      return data as Board[];
+    },
+  });
+
+  const boardIds = useMemo(() => boards.map((b) => b.id), [boards]);
+
+  const { data: boardCollections = [] } = useQuery({
+    queryKey: ["board-collections", storefront?.id, boardIds.join(",")],
+    enabled: !!storefront && boardIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("board_collections")
+        .select("board_id,collection_id")
+        .in("board_id", boardIds);
+      if (error) throw error;
+      return data as BoardCollection[];
+    },
+  });
+
+  const runImport = useMutation({
+    mutationFn: async () => importBoards({ data: undefined as unknown as never }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["collections", storefront?.id] });
+      qc.invalidateQueries({ queryKey: ["storefront-pins", storefront?.id] });
+      if (r.boardsCreated === 0 && r.pinsCreated === 0) {
+        toast("Your store is already up to date");
+      } else {
+        toast.success(`Imported ${r.boardsCreated} boards, ${r.pinsCreated} pins`);
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const startSync = () => {
+    setSyncOpen(true);
+    runImport.reset();
+    runImport.mutate();
+  };
+
+  const createCollection = useMutation({
+    mutationFn: async (p: { name: string; coverFile: File | null }) => {
+      const { data: userRes } = await supabase.auth.getUser();
+      let coverUrl: string | null = null;
+      if (p.coverFile) coverUrl = await uploadCover(p.coverFile, "collections");
+      const topPos = collections.length > 0 ? Math.min(...collections.map((c) => c.position)) - 1 : 0;
+      const { data: inserted, error } = await supabase
+        .from("collections")
+        .insert({
+          user_id: userRes.user!.id,
+          storefront_id: storefront!.id,
+          name: p.name,
+          slug: `${slugify(p.name)}-${Math.random().toString(36).slice(2, 5)}`,
+          source: "manual",
+          position: topPos, // new items appear on top
+          cover_image_url: coverUrl,
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+      return inserted;
+    },
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ["collections", storefront?.id] });
+      setShowNewCollection(false);
+      toast.success("Collection created — attaching products");
+      routerNavigate({
+        to: "/collections/$id/attach",
+        params: { id: created.id },
+      });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+
+
+  const hideCollection = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from("collections")
+        .update({ hidden_from_storefront_at: new Date().toISOString() })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collections", storefront?.id] });
+      setCoverPickerFor(null);
+      toast.success("Removed from storefront");
+    },
+  });
+
+  const setCollectionCover = useMutation({
+    mutationFn: async ({ id, url }: { id: string; url: string | null }) => {
+      const { error } = await supabase
+        .from("collections")
+        .update({ cover_image_url: url })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collections", storefront?.id] });
+      toast.success("Cover updated");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveCollectionOrder = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(
+        ids.map((id, idx) =>
+          supabase.from("collections").update({ position: idx }).eq("id", id),
+        ),
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["collections", storefront?.id] }),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveBoardOrder = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(
+        ids.map((id, idx) =>
+          supabase.from("boards").update({ position: idx }).eq("id", id),
+        ),
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["boards", storefront?.id] }),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const setBackground = useMutation({
+    mutationFn: async (file: File | null) => {
+      let url: string | null = null;
+      if (file) url = await uploadCover(file, "backgrounds");
+      const { error } = await supabase
+        .from("storefronts")
+        .update({ background_image_url: url })
+        .eq("id", storefront!.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["my-storefront"] });
+      toast.success("Background updated");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const createBoard = useMutation({
+    mutationFn: async (p: { name: string; coverFile: File | null; collectionIds: string[] }) => {
+      const { data: userRes } = await supabase.auth.getUser();
+      let coverUrl: string | null = null;
+      if (p.coverFile) coverUrl = await uploadCover(p.coverFile, "boards");
+      const { data: inserted, error } = await supabase
+        .from("boards")
+        .insert({
+          user_id: userRes.user!.id,
+          storefront_id: storefront!.id,
+          name: p.name,
+          cover_image_url: coverUrl,
+          position: boards.length > 0 ? Math.min(...boards.map((b) => b.position)) - 1 : 0,
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+      if (p.collectionIds.length > 0) {
+        const rows = p.collectionIds.map((cid, idx) => ({
+          board_id: inserted.id,
+          collection_id: cid,
+          user_id: userRes.user!.id,
+          position: idx,
+        }));
+        const { error: linkErr } = await supabase.from("board_collections").insert(rows);
+        if (linkErr) throw linkErr;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["boards", storefront?.id] });
+      qc.invalidateQueries({ queryKey: ["board-collections", storefront?.id] });
+      setShowNewBoard(false);
+      toast.success("Board created");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const hideBoard = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from("boards")
+        .update({ hidden_from_storefront_at: new Date().toISOString() })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["boards", storefront?.id] });
+      toast.success("Board removed from storefront");
+    },
+  });
+
+  const updateStore = useMutation({
+    mutationFn: async (p: { name: string; description: string; avatarFile: File | null }) => {
+      const { data: userRes } = await supabase.auth.getUser();
+      if (!userRes.user) throw new Error("Not signed in");
+      let avatarUrl: string | null = null;
+      if (p.avatarFile) {
+        const ext = p.avatarFile.name.split(".").pop()?.toLowerCase() || "jpg";
+        const path = `${userRes.user.id}/avatar-${Date.now()}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from("avatars")
+          .upload(path, p.avatarFile, { upsert: true, contentType: p.avatarFile.type });
+        if (upErr) throw upErr;
+        const { data: pub } = supabase.storage.from("avatars").getPublicUrl(path);
+        avatarUrl = pub.publicUrl;
+      }
+      const trimmedName = p.name.trim();
+      const trimmedDesc = p.description.trim();
+      const { error: sfErr } = await supabase
+        .from("storefronts")
+        .update({ name: trimmedName, description: trimmedDesc || null })
+        .eq("id", storefront!.id);
+      if (sfErr) throw sfErr;
+      if (avatarUrl) {
+        const { error: pErr } = await supabase
+          .from("profiles")
+          .update({ avatar_url: avatarUrl })
+          .eq("id", userRes.user.id);
+        if (pErr) throw pErr;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["my-storefront"] });
+      qc.invalidateQueries({ queryKey: ["me-profile"] });
+      setShowEditStore(false);
+      toast.success("Store updated");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const collectionsByBoard = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const bc of boardCollections) {
+      const arr = map.get(bc.board_id) ?? [];
+      arr.push(bc.collection_id);
+      map.set(bc.board_id, arr);
+    }
+    return map;
+  }, [boardCollections]);
+
+  if (sfLoading) {
+    return (
+      <AppShell title="My Store" backButton hideNotifications>
+        <SkeletonRows />
+      </AppShell>
+    );
+  }
+
+  if (!storefront) {
+    return (
+      <AppShell title="My Store" backButton hideNotifications>
+        <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center">
+          <p className="text-sm text-muted-foreground">
+            Your storefront is being set up. Refresh in a moment.
+          </p>
+        </div>
+      </AppShell>
+    );
+  }
+
+  const publicUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/s/${storefront.slug}`;
+  const brandColor = storefront.brand_color ?? "#E60023";
+  const backgroundUrl = storefront.background_image_url ?? DEFAULT_BACKGROUND;
+
+  return (
+    <AppShell title="My Store" backButton hideNotifications>
+      {/* Background band */}
+      <div className="relative -mx-4 mb-4 h-40 overflow-hidden sm:-mx-6">
+        <div
+          onClick={() => bgInputRef.current?.click()}
+          className="absolute inset-0 cursor-pointer"
+          role="button"
+          aria-label="Upload background"
+        >
+          <img
+            src={backgroundUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-background" />
+        </div>
+        {storefront.background_image_url && (
+          <button
+            type="button"
+            onClick={() => setBackground.mutate(null)}
+            disabled={setBackground.isPending}
+            aria-label="Reset default background"
+            className="absolute right-3 top-3 z-10 grid h-6 w-6 place-items-center rounded-full bg-black/50 text-white backdrop-blur transition hover:bg-black/70 disabled:opacity-60"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+        <input
+          ref={bgInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) setBackground.mutate(f);
+          }}
+        />
+      </div>
+
+      {/* Store header */}
+      <div className="-mt-16 flex flex-col items-center px-2 pb-6 text-center">
+        <label
+          className="group relative grid h-24 w-24 cursor-pointer place-items-center overflow-hidden rounded-full text-2xl font-semibold text-white shadow-elevate ring-4 ring-background"
+          style={{ background: brandColor }}
+          aria-label="Change profile picture"
+        >
+          {profile?.avatar_url ? (
+            <img
+              src={profile.avatar_url}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : (
+            <span>{storefront.name[0]?.toUpperCase()}</span>
+          )}
+          <span className="absolute inset-0 grid place-items-center bg-black/40 text-[10px] font-medium uppercase tracking-wide opacity-0 transition group-hover:opacity-100">
+            {updateStore.isPending ? "Saving…" : "Change"}
+          </span>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            disabled={updateStore.isPending}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (!f) return;
+              updateStore.mutate({
+                name: storefront.name,
+                description: storefront.description ?? "",
+                avatarFile: f,
+              });
+            }}
+          />
+        </label>
+        <h2 className="mt-3 font-display text-xl font-semibold">{storefront.name}</h2>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+          {storefront.description ?? "Hey, welcome to my store — curated picks and affiliate finds."}
+        </p>
+        <div className="mt-5 flex items-center gap-2">
+          <button
+            onClick={() => setShowEditStore(true)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-2"
+          >
+            <Pencil className="h-3.5 w-3.5" /> Edit
+          </button>
+          <Link
+            to="/s/$slug"
+            params={{ slug: storefront.slug }}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-2"
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> Preview
+          </Link>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-2">
+                <Share2 className="h-3.5 w-3.5" /> Share
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-2">
+              <div className="grid grid-cols-4 gap-1">
+                {(() => {
+                  const shareText = `Check out my storefront: ${storefront.name}`;
+                  const encodedUrl = encodeURIComponent(publicUrl);
+                  const encodedText = encodeURIComponent(shareText);
+                  const items: { label: string; icon: ReactNode; onClick: () => void }[] = [
+                    {
+                      label: "Pinterest",
+                      icon: <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12c0 5 3.1 9.4 7.5 11.1-.1-.9-.2-2.4 0-3.4.2-.9 1.4-5.7 1.4-5.7s-.4-.7-.4-1.8c0-1.7 1-2.9 2.2-2.9 1 0 1.5.8 1.5 1.7 0 1-.7 2.6-1 4-.3 1.2.6 2.1 1.7 2.1 2.1 0 3.7-2.2 3.7-5.4 0-2.8-2-4.8-4.9-4.8-3.3 0-5.3 2.5-5.3 5.1 0 1 .4 2.1.9 2.7.1.1.1.2.1.3-.1.4-.3 1.2-.3 1.4-.1.2-.2.3-.4.2-1.5-.7-2.4-2.9-2.4-4.6 0-3.8 2.7-7.2 7.9-7.2 4.1 0 7.3 3 7.3 6.9 0 4.1-2.6 7.5-6.2 7.5-1.2 0-2.4-.6-2.8-1.4l-.7 2.9c-.3 1-1 2.3-1.5 3.1 1.1.3 2.3.5 3.5.5 6.6 0 12-5.4 12-12S18.6 0 12 0z"/></svg>,
+                      onClick: () => window.open(`https://pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedText}`, "_blank"),
+                    },
+                    {
+                      label: "WhatsApp",
+                      icon: <MessageCircle className="h-5 w-5" />,
+                      onClick: () => window.open(`https://wa.me/?text=${encodedText}%20${encodedUrl}`, "_blank"),
+                    },
+                    {
+                      label: "Telegram",
+                      icon: <Send className="h-5 w-5" />,
+                      onClick: () => window.open(`https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`, "_blank"),
+                    },
+                    {
+                      label: "X",
+                      icon: <Twitter className="h-5 w-5" />,
+                      onClick: () => window.open(`https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`, "_blank"),
+                    },
+                    {
+                      label: "Facebook",
+                      icon: <Facebook className="h-5 w-5" />,
+                      onClick: () => window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`, "_blank"),
+                    },
+                    {
+                      label: "Email",
+                      icon: <Mail className="h-5 w-5" />,
+                      onClick: () => { window.location.href = `mailto:?subject=${encodeURIComponent(storefront.name)}&body=${encodedText}%20${encodedUrl}`; },
+                    },
+                    {
+                      label: "More",
+                      icon: <Share2 className="h-5 w-5" />,
+                      onClick: async () => {
+                        if (navigator.share) {
+                          try { await navigator.share({ title: storefront.name, text: shareText, url: publicUrl }); } catch {}
+                        } else {
+                          navigator.clipboard.writeText(publicUrl);
+                          toast.success("Link copied");
+                        }
+                      },
+                    },
+                    {
+                      label: "Copy",
+                      icon: <Copy className="h-5 w-5" />,
+                      onClick: () => { navigator.clipboard.writeText(publicUrl); toast.success("Link copied"); },
+                    },
+                  ];
+                  return items.map((it) => (
+                    <button
+                      key={it.label}
+                      onClick={it.onClick}
+                      className="flex flex-col items-center gap-1 rounded-lg p-2 text-[10px] font-medium text-foreground hover:bg-surface-2"
+                    >
+                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-2">
+                        {it.icon}
+                      </span>
+                      {it.label}
+                    </button>
+                  ));
+                })()}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="mb-4 flex items-center justify-center gap-1 rounded-full border border-border bg-surface p-1">
+        <button
+          onClick={() => setTab("collections")}
+          className={`flex-1 rounded-full px-4 py-2 text-sm font-semibold transition ${
+            tab === "collections"
+              ? "bg-foreground text-background"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Collections
+        </button>
+        <button
+          onClick={() => setTab("boards")}
+          className={`flex-1 rounded-full px-4 py-2 text-sm font-semibold transition ${
+            tab === "boards"
+              ? "bg-foreground text-background"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Boards
+        </button>
+      </div>
+
+      {/* Section header */}
+      <section>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="font-display text-base font-semibold">
+            {"\n"}
+          </h3>
+          <div className="flex items-center gap-2">
+            {(tab === "collections" ? collections.length : boards.length) >= 2 && (
+              <button
+                onClick={() => setReorderOpen(true)}
+                className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5" />
+                Reorder
+              </button>
+            )}
+            <button
+              onClick={() =>
+                tab === "collections" ? setShowNewCollection(true) : setShowNewBoard(true)
+              }
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              {tab === "collections" ? (
+                <FolderPlus className="h-3.5 w-3.5" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
+              New
+            </button>
+          </div>
+        </div>
+
+        {tab === "collections" ? (
+          collections.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center">
+              <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-primary shadow-glow">
+                <Layers className="h-6 w-6 text-primary-foreground" />
+              </div>
+              <h4 className="mt-4 font-display text-base font-semibold">No collections yet</h4>
+              <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
+                Sync your Pinterest boards or create a collection to start.
+              </p>
+              <button
+                onClick={startSync}
+                disabled={runImport.isPending}
+                className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+              >
+                {runImport.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                {runImport.isPending ? "Syncing…" : "Sync Pinterest"}
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {collections.map((c) => {
+                const cPins = pins.filter((p) => p.collection_id === c.id);
+                const coverUrl =
+                  c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null;
+                return (
+                  <CollectionCard
+                    key={c.id}
+                    name={c.name}
+                    count={cPins.length}
+                    countLabel="product"
+                    coverUrl={coverUrl}
+                    coverColor={c.cover_color}
+                    brandColor={brandColor}
+                    onOpen={() => setViewCollectionFor(c.id)}
+                    onEditCover={() => setCoverPickerFor(c.id)}
+                    onRemove={() => {
+                      if (
+                        confirm(
+                          `Remove "${c.name}" from storefront? It stays saved and still tags your products.`,
+                        )
+                      ) {
+                        hideCollection.mutate(c.id);
+                      }
+                    }}
+                  />
+                );
+              })}
+            </div>
+          )
+        ) : boards.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center">
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-primary shadow-glow">
+              <Layers className="h-6 w-6 text-primary-foreground" />
+            </div>
+            <h4 className="mt-4 font-display text-base font-semibold">No boards yet</h4>
+            <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
+              Boards group your collections — like Pinterest folders.
+            </p>
+            <button
+              onClick={() => setShowNewBoard(true)}
+              className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow"
+            >
+              <Plus className="h-3.5 w-3.5" /> New board
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            {boards.map((b) => {
+              const memberIds = collectionsByBoard.get(b.id) ?? [];
+              const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+              let coverUrl = b.cover_image_url;
+              const mosaic: string[] = [];
+              for (const mc of memberCollections) {
+                const img =
+                  mc.cover_image_url ??
+                  pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                  null;
+                if (img) mosaic.push(img);
+              }
+              if (!coverUrl && mosaic.length > 0) coverUrl = mosaic[0];
+              return (
+                <BoardCard
+                  key={b.id}
+                  name={b.name}
+                  count={memberIds.length}
+                  coverUrl={coverUrl}
+                  mosaic={mosaic}
+                  brandColor={brandColor}
+                  onOpen={() => setViewBoardFor(b.id)}
+                  onRemove={() => {
+                    if (confirm(`Remove "${b.name}" from storefront?`)) {
+                      hideBoard.mutate(b.id);
+                    }
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Public link card */}
+      <a
+        href={publicUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-6 flex items-center justify-between rounded-2xl border border-border bg-surface p-4 text-sm hover:border-primary/40"
+      >
+        <span className="flex items-center gap-2">
+          <ExternalLink className="h-4 w-4 text-primary" /> Public store link
+        </span>
+        <span className="truncate text-xs text-muted-foreground">{publicUrl}</span>
+      </a>
+
+      {/* Dialogs */}
+      {showNewCollection && (
+        <NewCollectionDialog
+          onCancel={() => setShowNewCollection(false)}
+          onCreate={(v) => createCollection.mutate(v)}
+          pending={createCollection.isPending}
+        />
+      )}
+
+      {showNewBoard && (
+        <NewBoardDialog
+          collections={collections}
+          onCancel={() => setShowNewBoard(false)}
+          onCreate={(v) => createBoard.mutate(v)}
+          pending={createBoard.isPending}
+        />
+      )}
+
+      {coverPickerFor && (
+        <CoverPickerDialog
+          collection={collections.find((c) => c.id === coverPickerFor)!}
+          pins={pins.filter((p) => p.collection_id === coverPickerFor && p.image_url)}
+          onSetCover={(url) => setCollectionCover.mutate({ id: coverPickerFor, url })}
+          onUploadCover={async (file) => {
+            try {
+              const url = await uploadCover(file, "collections");
+              setCollectionCover.mutate({ id: coverPickerFor, url });
+            } catch (e) {
+              toast.error((e as Error).message);
+            }
+          }}
+          onClose={() => setCoverPickerFor(null)}
+        />
+      )}
+
+      {viewCollectionFor && collections.find((c) => c.id === viewCollectionFor) && (
+        <CollectionPinsDialog
+          collection={collections.find((c) => c.id === viewCollectionFor)!}
+          pins={pins.filter((p) => p.collection_id === viewCollectionFor)}
+          onClose={() => {
+            setViewCollectionFor(null);
+            if (search.collection) {
+              navigate({ search: { collection: undefined } as never, replace: true });
+            }
+          }}
+        />
+      )}
+
+      {viewBoardFor && boards.find((b) => b.id === viewBoardFor) && (
+        <BoardDialog
+          board={boards.find((b) => b.id === viewBoardFor)!}
+          collections={collections.filter((c) =>
+            (collectionsByBoard.get(viewBoardFor) ?? []).includes(c.id),
+          )}
+          pins={pins}
+          brandColor={brandColor}
+          onOpenCollection={(id) => {
+            setViewBoardFor(null);
+            setViewCollectionFor(id);
+          }}
+          onClose={() => setViewBoardFor(null)}
+        />
+      )}
+
+      <PinterestSyncModal
+        open={syncOpen}
+        status={
+          runImport.isPending
+            ? "running"
+            : runImport.isError
+              ? "error"
+              : runImport.isSuccess
+                ? "success"
+                : "idle"
+        }
+        result={runImport.data ?? null}
+        error={runImport.error ? (runImport.error as Error).message : null}
+        onClose={() => {
+          setSyncOpen(false);
+          runImport.reset();
+        }}
+        onRetry={() => {
+          runImport.reset();
+          runImport.mutate();
+        }}
+      />
+
+      {showEditStore && (
+        <EditStoreDialog
+          initialName={storefront.name}
+          initialDescription={storefront.description ?? ""}
+          initialAvatarUrl={profile?.avatar_url ?? null}
+          brandColor={brandColor}
+          onCancel={() => setShowEditStore(false)}
+          onSave={(v) => updateStore.mutate(v)}
+          pending={updateStore.isPending}
+        />
+      )}
+
+      {reorderOpen && (
+        <ReorderListDialog
+          title={tab === "collections" ? "Reorder collections" : "Reorder boards"}
+          items={
+            tab === "collections"
+              ? collections.map((c) => {
+                  const cPins = pins.filter((p) => p.collection_id === c.id);
+                  return {
+                    id: c.id,
+                    name: c.name,
+                    subtitle: `${cPins.length} product${cPins.length === 1 ? "" : "s"}`,
+                    coverUrl: c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null,
+                    coverColor: c.cover_color,
+                  };
+                })
+              : boards.map((b) => {
+                  const memberIds = collectionsByBoard.get(b.id) ?? [];
+                  const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+                  let coverUrl = b.cover_image_url;
+                  if (!coverUrl) {
+                    for (const mc of memberCollections) {
+                      const img =
+                        mc.cover_image_url ??
+                        pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                        null;
+                      if (img) {
+                        coverUrl = img;
+                        break;
+                      }
+                    }
+                  }
+                  return {
+                    id: b.id,
+                    name: b.name,
+                    subtitle: `${memberIds.length} collection${memberIds.length === 1 ? "" : "s"}`,
+                    coverUrl,
+                    coverColor: null,
+                  };
+                })
+          }
+          brandColor={brandColor}
+          pending={tab === "collections" ? saveCollectionOrder.isPending : saveBoardOrder.isPending}
+          onSave={(order) => {
+            if (tab === "collections") saveCollectionOrder.mutate(order);
+            else saveBoardOrder.mutate(order);
+          }}
+          onClose={() => setReorderOpen(false)}
+        />
+      )}
+    </AppShell>
+  );
+}
+
+function SkeletonRows() {
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col items-center gap-3 py-2">
+        <div className="h-24 w-24 rounded-full bg-surface-2 animate-pulse" />
+        <div className="h-5 w-40 rounded-full bg-surface-2 animate-pulse" />
+        <div className="h-4 w-56 rounded-full bg-surface-2 animate-pulse" />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="aspect-square rounded-2xl bg-surface-2 animate-pulse" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type ReorderListItem = {
+  id: string;
+  name: string;
+  subtitle: string;
+  coverUrl: string | null;
+  coverColor: string | null;
+};
+
+function ReorderListDialog({
+  title,
+  items,
+  brandColor,
+  pending,
+  onSave,
+  onClose,
+}: {
+  title: string;
+  items: ReorderListItem[];
+  brandColor: string;
+  pending: boolean;
+  onSave: (order: string[]) => void;
+  onClose: () => void;
+}) {
+  const [order, setOrder] = useState<string[]>(() => items.map((i) => i.id));
+  const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div className="flex max-h-[80vh] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-elevate">
+        <div className="border-b border-border/60 px-4 py-3">
+          <h3 className="font-display text-base font-semibold">{title}</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">Drag to reorder</p>
+        </div>
+        <Reorder.Group
+          axis="y"
+          values={order}
+          onReorder={setOrder}
+          className="flex flex-1 flex-col gap-2 overflow-y-auto p-3"
+        >
+          {order.map((id) => {
+            const item = byId.get(id);
+            if (!item) return null;
+            return (
+              <Reorder.Item
+                key={id}
+                value={id}
+                whileDrag={{
+                  scale: 1.03,
+                  boxShadow: "0 20px 40px -12px rgba(0,0,0,0.35)",
+                  zIndex: 10,
+                }}
+                transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                className="flex touch-none select-none items-center gap-3 rounded-2xl border border-border bg-surface p-2.5 shadow-sm active:cursor-grabbing"
+              >
+                <motion.div
+                  whileHover={{ scale: 1.1 }}
+                  className="grid h-8 w-8 shrink-0 cursor-grab place-items-center rounded-full text-muted-foreground active:cursor-grabbing"
+                >
+                  <GripVertical className="h-4 w-4" />
+                </motion.div>
+                <div
+                  className="h-12 w-12 shrink-0 overflow-hidden rounded-xl"
+                  style={{
+                    background:
+                      item.coverColor ?? `linear-gradient(135deg, ${brandColor}, #F5E1D5)`,
+                  }}
+                >
+                  {item.coverUrl ? (
+                    <img src={item.coverUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="grid h-full w-full place-items-center text-white/80">
+                      <ImageIcon className="h-4 w-4" />
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">{item.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">{item.subtitle}</p>
+                </div>
+              </Reorder.Item>
+            );
+          })}
+        </Reorder.Group>
+        <div className="flex items-center justify-end gap-2 border-t border-border/60 px-4 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              onSave(order);
+              onClose();
+            }}
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />} Save order
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function CollectionCard({
+  name,
+  count,
+  countLabel,
+  coverUrl,
+  coverColor,
+  brandColor,
+  onOpen,
+  onEditCover,
+  onRemove,
+}: {
+  name: string;
+  count: number;
+  countLabel: string;
+  coverUrl: string | null;
+  coverColor: string | null;
+  brandColor: string;
+  onOpen: () => void;
+  onEditCover: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <article className="group relative overflow-hidden rounded-2xl border border-border bg-surface shadow-sm transition hover:shadow-md">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`View ${name}`}
+        className="block w-full text-left"
+      >
+        <div
+          className="relative aspect-square w-full"
+          style={{
+            background: coverColor ?? `linear-gradient(135deg, ${brandColor}, #F5E1D5)`,
+          }}
+        >
+          {coverUrl ? (
+            <img src={coverUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+          ) : (
+            <div className="absolute inset-0 grid place-items-center text-white/80">
+              <ImageIcon className="h-8 w-8" />
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
+          <div className="absolute inset-x-3 bottom-2 text-white">
+            <p className="truncate text-sm font-semibold">{name}</p>
+            <p className="text-[10px] opacity-80">
+              {count} {countLabel}
+              {count === 1 ? "" : "s"}
+            </p>
+          </div>
+        </div>
+      </button>
+      <button
+        onClick={onEditCover}
+        aria-label="Change cover"
+        className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur transition group-hover:opacity-100"
+      >
+        <ImageIcon className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={onRemove}
+        aria-label="Remove from storefront"
+        className="absolute left-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur transition group-hover:opacity-100"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </article>
+  );
+}
+
+function BoardCard({
+  name,
+  count,
+  coverUrl,
+  mosaic,
+  brandColor,
+  onOpen,
+  onRemove,
+}: {
+  name: string;
+  count: number;
+  coverUrl: string | null;
+  mosaic: string[];
+  brandColor: string;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
+  const hero = coverUrl;
+  const side = mosaic.filter((m) => m !== hero).slice(0, 2);
+  return (
+    <article className="group relative overflow-hidden rounded-2xl border border-border bg-surface shadow-sm transition hover:shadow-md">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="block w-full text-left"
+      >
+        <div
+          className="relative grid aspect-square w-full grid-cols-3 gap-0.5"
+          style={{ background: `linear-gradient(135deg, ${brandColor}, #F5E1D5)` }}
+        >
+          <div className="relative col-span-2 row-span-2 overflow-hidden">
+            {hero ? (
+              <img src={hero} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : (
+              <div className="absolute inset-0 grid place-items-center text-white/80">
+                <Layers className="h-8 w-8" />
+              </div>
+            )}
+          </div>
+          <div className="relative overflow-hidden bg-surface-2">
+            {side[0] ? (
+              <img src={side[0]} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : null}
+          </div>
+          <div className="relative overflow-hidden bg-surface-2">
+            {side[1] ? (
+              <img src={side[1]} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : null}
+          </div>
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
+          <div className="absolute inset-x-3 bottom-2 text-white">
+            <p className="truncate text-sm font-semibold">{name}</p>
+            <p className="text-[10px] opacity-80">
+              {count} collection{count === 1 ? "" : "s"}
+            </p>
+          </div>
+        </div>
+      </button>
+      <button
+        onClick={onRemove}
+        aria-label="Remove from storefront"
+        className="absolute left-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur transition group-hover:opacity-100"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </article>
+  );
+}
+
+function NewCollectionDialog({
+  onCancel,
+  onCreate,
+  pending,
+}: {
+  onCancel: () => void;
+  onCreate: (v: { name: string; coverFile: File | null }) => void;
+  pending: boolean;
+}) {
+  const [name, setName] = useState("");
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  return (
+    <ModalShell onClose={onCancel}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-elevate">
+        <h3 className="font-display text-lg font-semibold">New collection</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Group your products the way you'd group them on Pinterest.
+        </p>
+        <label className="mt-4 block cursor-pointer">
+          <div className="relative grid aspect-video w-full place-items-center overflow-hidden rounded-xl border border-dashed border-border bg-surface-2 text-muted-foreground">
+            {preview ? (
+              <img src={preview} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : (
+              <span className="flex items-center gap-2 text-xs">
+                <Camera className="h-4 w-4" /> Upload cover&nbsp;
+
+
+              </span>
+            )}
+          </div>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setCoverFile(f);
+              setPreview(f ? URL.createObjectURL(f) : null);
+            }}
+          />
+        </label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Fall capsule wardrobe"
+          className="mt-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+        />
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!name.trim() || pending}
+            onClick={() => onCreate({ name: name.trim(), coverFile })}
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />} Create
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function NewBoardDialog({
+  collections,
+  onCancel,
+  onCreate,
+  pending,
+}: {
+  collections: Collection[];
+  onCancel: () => void;
+  onCreate: (v: { name: string; coverFile: File | null; collectionIds: string[] }) => void;
+  pending: boolean;
+}) {
+  const [name, setName] = useState("");
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+  return (
+    <ModalShell onClose={onCancel}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-elevate">
+        <h3 className="font-display text-lg font-semibold">New board</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Boards are folders of collections — pick a cover and add your collections.
+        </p>
+        <label className="mt-4 block cursor-pointer">
+          <div className="relative grid aspect-video w-full place-items-center overflow-hidden rounded-xl border border-dashed border-border bg-surface-2 text-muted-foreground">
+            {preview ? (
+              <img src={preview} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : (
+              <span className="flex items-center gap-2 text-xs">
+                <Camera className="h-4 w-4" /> Upload cover&nbsp;
+
+              </span>
+            )}
+          </div>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setCoverFile(f);
+              setPreview(f ? URL.createObjectURL(f) : null);
+            }}
+          />
+        </label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Home aesthetic"
+          className="mt-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+        />
+        <div className="mt-4">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Collections in this board</p>
+          {collections.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
+              Create a collection first.
+            </p>
+          ) : (
+            <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
+              {collections.map((c) => {
+                const active = selected.has(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => toggle(c.id)}
+                    className={`flex w-full items-center gap-3 border-b border-border px-3 py-2 text-left text-sm last:border-b-0 ${
+                      active ? "bg-primary/5" : "hover:bg-surface-2"
+                    }`}
+                  >
+                    <div
+                      className={`grid h-5 w-5 place-items-center rounded-full border ${
+                        active ? "border-primary bg-primary text-primary-foreground" : "border-border"
+                      }`}
+                    >
+                      {active && <Check className="h-3 w-3" />}
+                    </div>
+                    {c.cover_image_url ? (
+                      <img
+                        src={c.cover_image_url}
+                        alt=""
+                        className="h-8 w-8 rounded object-cover"
+                      />
+                    ) : (
+                      <div
+                        className="h-8 w-8 rounded"
+                        style={{ background: c.cover_color ?? "#7C5CFF" }}
+                      />
+                    )}
+                    <span className="flex-1 truncate">{c.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!name.trim() || pending}
+            onClick={() =>
+              onCreate({ name: name.trim(), coverFile, collectionIds: Array.from(selected) })
+            }
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />} Create
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function CoverPickerDialog({
+  collection,
+  pins,
+  onSetCover,
+  onUploadCover,
+  onClose,
+}: {
+  collection: Collection;
+  pins: Pin[];
+  onSetCover: (url: string | null) => void;
+  onUploadCover: (file: File) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl sm:rounded-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+          <h3 className="text-sm font-semibold">Choose cover · {collection.name}</h3>
+          <button
+            onClick={onClose}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto p-4">
+          <label className="mb-3 flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-border bg-surface-2/50 p-3 text-xs font-medium text-muted-foreground hover:text-foreground">
+            <Camera className="h-4 w-4" /> Upload a new cover image
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) onUploadCover(f);
+              }}
+            />
+          </label>
+          {pins.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
+              Or add products to this collection to use as covers.
+            </p>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {pins.map((p) => {
+                const active = collection.cover_image_url === p.image_url;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => onSetCover(p.image_url)}
+                    className={`relative aspect-square overflow-hidden rounded-lg border transition ${
+                      active
+                        ? "border-primary ring-2 ring-primary"
+                        : "border-border hover:border-primary/60"
+                    }`}
+                  >
+                    <img src={p.image_url!} alt="" className="h-full w-full object-cover" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {collection.cover_image_url && (
+          <div className="border-t border-border/60 px-4 py-3">
+            <button
+              onClick={() => onSetCover(null)}
+              className="text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              Reset to default
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EditStoreDialog({
+  initialName,
+  initialDescription,
+  initialAvatarUrl,
+  brandColor,
+  onCancel,
+  onSave,
+  pending,
+}: {
+  initialName: string;
+  initialDescription: string;
+  initialAvatarUrl: string | null;
+  brandColor: string;
+  onCancel: () => void;
+  onSave: (v: { name: string; description: string; avatarFile: File | null }) => void;
+  pending: boolean;
+}) {
+  const [name, setName] = useState(initialName);
+  const [description, setDescription] = useState(initialDescription);
+  const [avatarUrl, setAvatarUrl] = useState(initialAvatarUrl);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+
+  const handleAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setAvatarFile(f);
+    setAvatarUrl(URL.createObjectURL(f));
+  };
+
+  return (
+    <ModalShell onClose={onCancel}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-elevate">
+        <h3 className="font-display text-lg font-semibold">Edit store</h3>
+        <div className="mt-4 flex flex-col items-center">
+          <label
+            className="group relative grid h-20 w-20 cursor-pointer place-items-center overflow-hidden rounded-full text-xl font-semibold text-white shadow-glow ring-4 ring-background"
+            style={{ background: brandColor }}
+          >
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            ) : (
+              <span>{name[0]?.toUpperCase()}</span>
+            )}
+            <span className="absolute inset-0 grid place-items-center bg-black/40 text-[10px] font-medium uppercase tracking-wide opacity-0 transition group-hover:opacity-100">
+              Change
+            </span>
+            <input type="file" accept="image/*" onChange={handleAvatar} className="hidden" />
+          </label>
+        </div>
+        <div className="mt-5 space-y-3">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Store name"
+            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Short bio"
+            rows={3}
+            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!name.trim() || pending}
+            onClick={() =>
+              onSave({ name: name.trim(), description: description.trim(), avatarFile })
+            }
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />} Save
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalShell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-background/70 p-4 backdrop-blur"
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()}>{children}</div>
+    </div>
+  );
+}
+
+function CollectionPinsDialog({
+  collection,
+  pins,
+  onClose,
+}: {
+  collection: Collection;
+  pins: Pin[];
+  onClose: () => void;
+}) {
+  const { data: products = [] } = useQuery({
+    queryKey: ["collection-products", collection.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("storefront_products")
+        .select("id,title,image_url,affiliate_url")
+        .eq("collection_id", collection.id)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data as { id: string; title: string; image_url: string | null; affiliate_url: string }[];
+    },
+  });
+
+  const totalItems = pins.length + products.length;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl sm:rounded-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold">{collection.name}</h3>
+            <p className="text-[11px] text-muted-foreground">
+              {totalItems} item{totalItems === 1 ? "" : "s"}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">
+            Close
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto p-4">
+          {totalItems === 0 ? (
+            <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
+              No items in this collection yet.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {products.map((p) => (
+                <a
+                  key={`prod-${p.id}`}
+                  href={p.affiliate_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block"
+                >
+                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
+                    <div className="relative aspect-square w-full">
+                      {p.image_url ? (
+                        <img
+                          src={p.image_url}
+                          alt={p.title}
+                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 grid place-items-center bg-gradient-to-br from-primary/20 to-primary/5 text-primary">
+                          <ExternalLink className="h-6 w-6" />
+                        </div>
+                      )}
+                      <span className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
+                        Product
+                      </span>
+                    </div>
+                    <div className="p-2">
+                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
+                    </div>
+                  </div>
+                </a>
+              ))}
+              {pins.map((p) => {
+                const Card = (
+                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
+                    <div className="relative aspect-square w-full">
+                      {p.image_url ? (
+                        <img
+                          src={p.image_url}
+                          alt={p.title}
+                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 grid place-items-center text-muted-foreground">
+                          <ImageIcon className="h-6 w-6" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-2">
+                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
+                    </div>
+                  </div>
+                );
+                return p.external_url ? (
+                  <a
+                    key={p.id}
+                    href={p.external_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block"
+                  >
+                    {Card}
+                  </a>
+                ) : (
+                  <div key={p.id}>{Card}</div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BoardDialog({
+  board,
+  collections,
+  pins,
+  brandColor,
+  onOpenCollection,
+  onClose,
+}: {
+  board: Board;
+  collections: Collection[];
+  pins: Pin[];
+  brandColor: string;
+  onOpenCollection: (id: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl sm:rounded-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold">{board.name}</h3>
+            <p className="text-[11px] text-muted-foreground">
+              {collections.length} collection{collections.length === 1 ? "" : "s"}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">
+            Close
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto p-4">
+          {collections.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
+              This board is empty.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {collections.map((c) => {
+                const cPins = pins.filter((p) => p.collection_id === c.id);
+                const coverUrl =
+                  c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => onOpenCollection(c.id)}
+                    className="group overflow-hidden rounded-xl border border-border bg-surface-2 text-left"
+                  >
+                    <div
+                      className="relative aspect-square w-full"
+                      style={{
+                        background:
+                          c.cover_color ?? `linear-gradient(135deg, ${brandColor}, #F5E1D5)`,
+                      }}
+                    >
+                      {coverUrl ? (
+                        <img
+                          src={coverUrl}
+                          alt=""
+                          className="absolute inset-0 h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 grid place-items-center text-white/80">
+                          <ImageIcon className="h-8 w-8" />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
+                      <div className="absolute inset-x-3 bottom-2 text-white">
+                        <p className="truncate text-sm font-semibold">{c.name}</p>
+                        <p className="text-[10px] opacity-80">
+                          {cPins.length} product{cPins.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
