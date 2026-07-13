@@ -1,0 +1,516 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[]
+
+export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
+  }
+  public: {
+    Tables: {
+      board_collections: {
+        Row: {
+          board_id: string
+          collection_id: string
+          created_at: string
+          position: number
+          user_id: string
+        }
+        Insert: {
+          board_id: string
+          collection_id: string
+          created_at?: string
+          position?: number
+          user_id: string
+        }
+        Update: {
+          board_id?: string
+          collection_id?: string
+          created_at?: string
+          position?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "board_collections_board_id_fkey"
+            columns: ["board_id"]
+            isOneToOne: false
+            referencedRelation: "boards"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "board_collections_collection_id_fkey"
+            columns: ["collection_id"]
+            isOneToOne: false
+            referencedRelation: "collections"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      boards: {
+        Row: {
+          cover_image_url: string | null
+          created_at: string
+          hidden_from_storefront_at: string | null
+          id: string
+          name: string
+          position: number
+          storefront_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          cover_image_url?: string | null
+          created_at?: string
+          hidden_from_storefront_at?: string | null
+          id?: string
+          name: string
+          position?: number
+          storefront_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          cover_image_url?: string | null
+          created_at?: string
+          hidden_from_storefront_at?: string | null
+          id?: string
+          name?: string
+          position?: number
+          storefront_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "boards_storefront_id_fkey"
+            columns: ["storefront_id"]
+            isOneToOne: false
+            referencedRelation: "storefronts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      collections: {
+        Row: {
+          cover_color: string | null
+          cover_image_url: string | null
+          created_at: string
+          description: string | null
+          hidden_from_storefront_at: string | null
+          id: string
+          name: string
+          pinterest_board_id: string | null
+          position: number
+          slug: string
+          source: string
+          storefront_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          cover_color?: string | null
+          cover_image_url?: string | null
+          created_at?: string
+          description?: string | null
+          hidden_from_storefront_at?: string | null
+          id?: string
+          name: string
+          pinterest_board_id?: string | null
+          position?: number
+          slug: string
+          source?: string
+          storefront_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          cover_color?: string | null
+          cover_image_url?: string | null
+          created_at?: string
+          description?: string | null
+          hidden_from_storefront_at?: string | null
+          id?: string
+          name?: string
+          pinterest_board_id?: string | null
+          position?: number
+          slug?: string
+          source?: string
+          storefront_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "collections_storefront_id_fkey"
+            columns: ["storefront_id"]
+            isOneToOne: false
+            referencedRelation: "storefronts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pins: {
+        Row: {
+          clicks: number
+          collection_id: string | null
+          conversions: number
+          created_at: string
+          description: string | null
+          earnings_cents: number
+          external_url: string | null
+          id: string
+          image_url: string | null
+          impressions: number
+          product_id: string | null
+          source: string | null
+          status: string
+          storefront_id: string | null
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          clicks?: number
+          collection_id?: string | null
+          conversions?: number
+          created_at?: string
+          description?: string | null
+          earnings_cents?: number
+          external_url?: string | null
+          id?: string
+          image_url?: string | null
+          impressions?: number
+          product_id?: string | null
+          source?: string | null
+          status?: string
+          storefront_id?: string | null
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          clicks?: number
+          collection_id?: string | null
+          conversions?: number
+          created_at?: string
+          description?: string | null
+          earnings_cents?: number
+          external_url?: string | null
+          id?: string
+          image_url?: string | null
+          impressions?: number
+          product_id?: string | null
+          source?: string | null
+          status?: string
+          storefront_id?: string | null
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pins_collection_id_fkey"
+            columns: ["collection_id"]
+            isOneToOne: false
+            referencedRelation: "collections"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pins_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "storefront_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pins_storefront_id_fkey"
+            columns: ["storefront_id"]
+            isOneToOne: false
+            referencedRelation: "storefronts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          id: string
+          onboarding_completed: boolean
+          pinterest_connected: boolean
+          pinterest_username: string | null
+          source_platform: string | null
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id: string
+          onboarding_completed?: boolean
+          pinterest_connected?: boolean
+          pinterest_username?: string | null
+          source_platform?: string | null
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          onboarding_completed?: boolean
+          pinterest_connected?: boolean
+          pinterest_username?: string | null
+          source_platform?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      storefront_products: {
+        Row: {
+          affiliate_url: string
+          collection_id: string | null
+          commission_pct: number | null
+          created_at: string
+          currency: string | null
+          id: string
+          image_url: string | null
+          position: number
+          price_cents: number | null
+          storefront_id: string
+          title: string
+          user_id: string
+        }
+        Insert: {
+          affiliate_url: string
+          collection_id?: string | null
+          commission_pct?: number | null
+          created_at?: string
+          currency?: string | null
+          id?: string
+          image_url?: string | null
+          position?: number
+          price_cents?: number | null
+          storefront_id: string
+          title: string
+          user_id: string
+        }
+        Update: {
+          affiliate_url?: string
+          collection_id?: string | null
+          commission_pct?: number | null
+          created_at?: string
+          currency?: string | null
+          id?: string
+          image_url?: string | null
+          position?: number
+          price_cents?: number | null
+          storefront_id?: string
+          title?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "storefront_products_collection_id_fkey"
+            columns: ["collection_id"]
+            isOneToOne: false
+            referencedRelation: "collections"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "storefront_products_storefront_id_fkey"
+            columns: ["storefront_id"]
+            isOneToOne: false
+            referencedRelation: "storefronts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      storefronts: {
+        Row: {
+          background_image_url: string | null
+          brand_color: string | null
+          created_at: string
+          description: string | null
+          id: string
+          is_default: boolean
+          is_published: boolean
+          name: string
+          slug: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          background_image_url?: string | null
+          brand_color?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_default?: boolean
+          is_published?: boolean
+          name: string
+          slug: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          background_image_url?: string | null
+          brand_color?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_default?: boolean
+          is_published?: boolean
+          name?: string
+          slug?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      [_ in never]: never
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
+}
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const

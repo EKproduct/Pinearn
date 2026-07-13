@@ -1,0 +1,228 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { AppShell } from "@/components/app-shell";
+import { Loader2, Save, User as UserIcon, ImagePlus } from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/profile")({
+  component: ProfilePage,
+});
+
+function ProfilePage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [email, setEmail] = useState<string>("");
+  const [displayName, setDisplayName] = useState("");
+  const [pinterestUsername, setPinterestUsername] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [connected, setConnected] = useState(false);
+
+  const { data: pinCount } = useQuery({
+    queryKey: ["pin-count"],
+    queryFn: async () => {
+      const { count } = await supabase.from("pins").select("*", { count: "exact", head: true });
+      return count ?? 0;
+    },
+  });
+  const { data: storefrontCount } = useQuery({
+    queryKey: ["sf-count"],
+    queryFn: async () => {
+      const { count } = await supabase.from("storefronts").select("*", { count: "exact", head: true });
+      return count ?? 0;
+    },
+  });
+
+  useEffect(() => {
+    (async () => {
+      const { data: u } = await supabase.auth.getUser();
+      if (!u.user) return;
+      setUserId(u.user.id);
+      setEmail(u.user.email ?? "");
+      const { data: p } = await supabase
+        .from("profiles")
+        .select("display_name, avatar_url, pinterest_username, pinterest_connected")
+        .eq("id", u.user.id)
+        .maybeSingle();
+      if (p) {
+        setDisplayName(p.display_name ?? "");
+        setPinterestUsername(p.pinterest_username ?? "");
+        setAvatarUrl(p.avatar_url ?? "");
+        setConnected(!!p.pinterest_connected);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  async function save() {
+    if (!userId) return;
+    if (displayName.trim().length < 2) return toast.error("Enter your name");
+    setSaving(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        display_name: displayName.trim(),
+        pinterest_username: pinterestUsername.trim() || null,
+        avatar_url: avatarUrl.trim() || null,
+      })
+      .eq("id", userId);
+    setSaving(false);
+    if (error) return toast.error(error.message);
+    toast.success("Profile updated");
+  }
+
+  const initials = (displayName || email || "?")
+    .split(/\s+/)
+    .map((s) => s[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <AppShell title="Profile">
+      <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 md:px-0">
+        <div className="rounded-2xl border border-border bg-surface/85 p-6 shadow-elevate">
+          <div className="flex items-center gap-4">
+            <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-primary text-primary-foreground shadow-glow">
+              {avatarUrl ? (
+                <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <span className="font-display text-xl font-bold">{initials}</span>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h1 className="font-display text-xl font-semibold leading-tight">
+                {displayName || "Your profile"}
+              </h1>
+              <p className="truncate text-xs text-muted-foreground">{email}</p>
+              <span
+                className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  connected
+                    ? "bg-accent/15 text-accent"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {connected ? "Pinterest connected" : "Pinterest not connected"}
+              </span>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…
+            </div>
+          ) : (
+            <div className="mt-6 space-y-4">
+              <Field label="Display name" icon={UserIcon}>
+                <input
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="w-full bg-transparent py-2 text-sm outline-none"
+                  placeholder="Your name"
+                />
+              </Field>
+              <Field label="Pinterest username" icon={UserIcon}>
+                <input
+                  value={pinterestUsername}
+                  onChange={(e) => setPinterestUsername(e.target.value.replace(/^@/, ""))}
+                  className="w-full bg-transparent py-2 text-sm outline-none"
+                  placeholder="your-handle"
+                />
+              </Field>
+              <Field label="Avatar URL" icon={ImagePlus}>
+                <input
+                  value={avatarUrl}
+                  onChange={(e) => setAvatarUrl(e.target.value)}
+                  className="w-full bg-transparent py-2 text-sm outline-none"
+                  placeholder="https://…"
+                />
+              </Field>
+
+              <button
+                onClick={save}
+                disabled={saving}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition disabled:opacity-60"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Save changes
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Account panel */}
+        <Card>
+          <CardHeader title="Account" />
+          <ul className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+            <Row k="Pins created" v={fmt(pinCount ?? 0)} />
+            <Row k="Storefronts" v={fmt(storefrontCount ?? 0)} />
+            <Row
+              k="Pinterest"
+              v={
+                connected ? (
+                  <span className="text-accent">@{pinterestUsername || "connected"}</span>
+                ) : (
+                  <span className="text-muted-foreground">Not connected</span>
+                )
+              }
+            />
+            <Row k="Plan" v="Creator (Free)" />
+          </ul>
+        </Card>
+      </div>
+    </AppShell>
+  );
+}
+
+function Field({
+  label,
+  icon: Icon,
+  children,
+}: {
+  label: string;
+  icon: any;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-2 rounded-xl border border-input bg-background px-3">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        {children}
+      </div>
+    </label>
+  );
+}
+
+function Card({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-2xl border border-border bg-surface p-5 ${className ?? ""}`}>{children}</div>
+  );
+}
+
+function CardHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="mb-4 flex items-baseline justify-between">
+      <h3 className="font-display text-base font-semibold">{title}</h3>
+      {subtitle && <span className="text-xs text-muted-foreground">{subtitle}</span>}
+    </div>
+  );
+}
+
+function Row({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <li className="flex items-center justify-between rounded-xl bg-surface-2 px-3 py-2.5">
+      <span className="text-muted-foreground">{k}</span>
+      <span className="font-medium">{v}</span>
+    </li>
+  );
+}
+
+function fmt(n: number) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return n.toLocaleString();
+}

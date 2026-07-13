@@ -1,0 +1,187 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { AppShell } from "@/components/app-shell";
+import { Check, Plus, Users, Loader2 } from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/switch-profile")({
+  component: SwitchProfilePage,
+});
+
+type PinAccount = { id: string; handle: string; label?: string };
+
+function readStore(primaryHandle?: string | null): {
+  accounts: PinAccount[];
+  activeId: string;
+} {
+  try {
+    const raw = localStorage.getItem("pinearn.pinAccounts");
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { accounts: [], activeId: "primary" };
+}
+
+function writeStore(data: { accounts: PinAccount[]; activeId: string }) {
+  localStorage.setItem("pinearn.pinAccounts", JSON.stringify(data));
+}
+
+function SwitchProfilePage() {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [primary, setPrimary] = useState<{ handle: string; name: string } | null>(null);
+  const [accounts, setAccounts] = useState<PinAccount[]>([]);
+  const [activeId, setActiveId] = useState("primary");
+  const [newHandle, setNewHandle] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data: u } = await supabase.auth.getUser();
+      if (u.user) {
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("display_name, pinterest_username")
+          .eq("id", u.user.id)
+          .maybeSingle();
+        setPrimary({
+          handle: p?.pinterest_username ?? "your-pinterest",
+          name: p?.display_name ?? "Primary",
+        });
+      }
+      const stored = readStore();
+      setAccounts(stored.accounts ?? []);
+      setActiveId(stored.activeId ?? "primary");
+      setLoading(false);
+    })();
+  }, []);
+
+  function pick(id: string, handle: string) {
+    setActiveId(id);
+    writeStore({ accounts, activeId: id });
+    toast.success(`Switched to @${handle}`);
+  }
+
+  function addAccount(e: React.FormEvent) {
+    e.preventDefault();
+    const h = newHandle.replace(/^@/, "").trim();
+    if (h.length < 2) return toast.error("Enter a handle");
+    if (accounts.some((a) => a.handle === h))
+      return toast.error("Already added");
+    const id = crypto.randomUUID();
+    const next = [...accounts, { id, handle: h }];
+    setAccounts(next);
+    setActiveId(id);
+    writeStore({ accounts: next, activeId: id });
+    setNewHandle("");
+    toast.success(`Added @${h}`);
+  }
+
+  function remove(id: string) {
+    const next = accounts.filter((a) => a.id !== id);
+    const nextActive = activeId === id ? "primary" : activeId;
+    setAccounts(next);
+    setActiveId(nextActive);
+    writeStore({ accounts: next, activeId: nextActive });
+    toast.success("Removed");
+  }
+
+  const all: PinAccount[] = [
+    { id: "primary", handle: primary?.handle ?? "your-pinterest", label: primary?.name ?? "Primary" },
+    ...accounts,
+  ];
+
+  return (
+    <AppShell title="Switch profile" showBack>
+      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6 md:px-0">
+        <div className="rounded-2xl border border-border bg-surface/85 p-5 shadow-elevate">
+          <div className="mb-4 flex items-center gap-2">
+            <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-primary text-primary-foreground shadow-glow">
+              <Users className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="font-display text-lg font-semibold leading-tight">
+                Pinterest profiles
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Switch which Pinterest account powers your storefront.
+              </div>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {all.map((a) => {
+                const isActive = a.id === activeId;
+                return (
+                  <div
+                    key={a.id}
+                    className={`flex items-center gap-3 rounded-xl border p-3 transition ${
+                      isActive
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-surface-2 hover:bg-surface"
+                    }`}
+                  >
+                    <button
+                      onClick={() => pick(a.id, a.handle)}
+                      className="flex flex-1 items-center gap-3 text-left"
+                    >
+                      <div className="grid h-10 w-10 place-items-center rounded-full bg-primary/10 text-sm font-bold text-primary">
+                        {a.handle.slice(0, 1).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold">@{a.handle}</div>
+                        {a.label && (
+                          <div className="truncate text-xs text-muted-foreground">
+                            {a.label}
+                          </div>
+                        )}
+                      </div>
+                      {isActive && <Check className="h-4 w-4 text-primary" />}
+                    </button>
+                    {a.id !== "primary" && (
+                      <button
+                        onClick={() => remove(a.id)}
+                        className="rounded-lg px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <form onSubmit={addAccount} className="mt-4 flex items-stretch gap-2">
+            <div className="flex flex-1 items-center gap-2 rounded-xl border-2 border-dashed border-border bg-background px-3">
+              <span className="text-muted-foreground">@</span>
+              <input
+                value={newHandle}
+                onChange={(e) => setNewHandle(e.target.value)}
+                placeholder="add-pinterest-handle"
+                className="flex-1 bg-transparent py-2.5 text-sm outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-primary px-4 text-sm font-semibold text-primary-foreground shadow-glow"
+            >
+              <Plus className="h-4 w-4" /> Add
+            </button>
+          </form>
+        </div>
+
+        <button
+          onClick={() => navigate({ to: "/dashboard" })}
+          className="w-full rounded-2xl border border-border bg-surface p-3 text-sm font-medium hover:bg-surface-2"
+        >
+          Back to dashboard
+        </button>
+      </div>
+    </AppShell>
+  );
+}
