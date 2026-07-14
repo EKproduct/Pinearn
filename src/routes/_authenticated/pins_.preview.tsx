@@ -9,6 +9,7 @@ import {
   Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
+import { pickPlaceholderImage } from "@/lib/placeholder-image";
 
 
 export const Route = createFileRoute("/_authenticated/pins_/preview")({
@@ -312,7 +313,7 @@ function PinPreviewPage() {
                       onClick={() => window.open(a.url, "_blank", "noopener,noreferrer")}
                     >
                       <img
-                        src={`https://loremflickr.com/400/400/${encodeURIComponent(a.title)}?lock=${i + 1}`}
+                        src={pickPlaceholderImage(a.title)}
                         alt={a.title}
                         loading="lazy"
                         className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"

@@ -88,9 +88,9 @@ function AuthPage() {
   async function sendCode(e?: React.FormEvent) {
     e?.preventDefault();
     const currentPhone = phoneRef.current?.value ?? localPhone;
-    const digits = currentPhone.replace(/[^\d]/g, "");
-    if (digits.length < 6) {
-      return toast.error("Enter a valid phone number");
+    const digits = currentPhone.replace(/[^\d]/g, "").slice(0, 10);
+    if (digits.length !== 10) {
+      return toast.error("Enter a valid 10-digit phone number");
     }
     const p = `${country.dial}${digits}`;
     setLocalPhone(digits);
@@ -270,7 +270,8 @@ function AuthPage() {
                     autoComplete="tel-national"
                     inputMode="numeric"
                     value={localPhone}
-                    onChange={(e) => setLocalPhone(e.target.value.replace(/[^\d\s]/g, ""))}
+                    maxLength={10}
+                    onChange={(e) => setLocalPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
                     placeholder="Enter phone number"
                     className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] outline-none placeholder:text-muted-foreground"
                   />

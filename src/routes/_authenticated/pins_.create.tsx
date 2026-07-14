@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { visualSearchImage } from "@/lib/pinterest.functions";
+import { pickPlaceholderImage } from "@/lib/placeholder-image";
 import type { Collection, Product, Storefront } from "./pins";
 
 export const Route = createFileRoute("/_authenticated/pins_/create")({
@@ -467,7 +468,7 @@ function StepProducts({
           storefront_id: targetStorefront,
           title: s.title,
           affiliate_url: aiLinkFor(s),
-          image_url: `https://loremflickr.com/400/400/${encodeURIComponent(s.query)}?lock=${idx + 1}`,
+          image_url: pickPlaceholderImage(s.query),
         })
         .select("id")
         .single();
@@ -684,7 +685,7 @@ function StepProducts({
                     className="relative aspect-square w-full overflow-hidden bg-primary/10"
                   >
                     <img
-                      src={`https://loremflickr.com/400/400/${encodeURIComponent(s.query)}?lock=${idx + 1}`}
+                      src={pickPlaceholderImage(s.query)}
                       alt={s.title}
                       loading="lazy"
                       className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
