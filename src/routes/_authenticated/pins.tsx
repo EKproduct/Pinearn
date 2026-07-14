@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { visualSearchPin } from "@/lib/pinterest.functions";
+import { pickPlaceholderImage } from "@/lib/placeholder-image";
 
 export const Route = createFileRoute("/_authenticated/pins")({
   validateSearch: (s: Record<string, unknown>) => ({
@@ -734,7 +735,7 @@ export function PinDetailDialog({
                       }}
                     >
                       <img
-                        src={`https://loremflickr.com/400/400/${encodeURIComponent(s.query)}?lock=${idx + 1}`}
+                        src={pickPlaceholderImage(s.query)}
                         alt={s.title}
                         loading="lazy"
                         className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"

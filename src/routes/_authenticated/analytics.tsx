@@ -22,6 +22,7 @@ import {
   Send,
 } from "lucide-react";
 import { toast } from "sonner";
+import { pickPlaceholderImage } from "@/lib/placeholder-image";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
   component: Analytics,
@@ -58,12 +59,12 @@ type ProductDef = {
 };
 
 const PRODUCT_DEFS: ProductDef[] = [
-  { id: "prod1", pinId: "p1", title: "Rattan pendant lamp", image: "https://loremflickr.com/400/400/pendant-lamp?lock=101", brand: "Amazon", clicks: 3500 },
-  { id: "prod2", pinId: "p1", title: "Ceramic dutch oven", image: "https://loremflickr.com/400/400/dutch-oven?lock=102", brand: "Amazon", clicks: 3600 },
-  { id: "prod3", pinId: "p2", title: "Cast iron skillet", image: "https://loremflickr.com/400/400/cast-iron-skillet?lock=103", brand: "Amazon", clicks: 2100 },
-  { id: "prod4", pinId: "p3", title: "Slip dress", image: "https://loremflickr.com/400/400/slip-dress?lock=104", brand: "Myntra", clicks: 1800 },
-  { id: "prod5", pinId: "p4", title: "Vitamin C serum", image: "https://loremflickr.com/400/400/serum-bottle?lock=105", brand: "Amazon", clicks: 1500 },
-  { id: "prod6", pinId: "p6", title: "Carry-on suitcase", image: "https://loremflickr.com/400/400/carry-on-suitcase?lock=106", brand: "Amazon", clicks: 1200 },
+  { id: "prod1", pinId: "p1", title: "Rattan pendant lamp", image: pickPlaceholderImage("pendant-lamp"), brand: "Amazon", clicks: 3500 },
+  { id: "prod2", pinId: "p1", title: "Ceramic dutch oven", image: pickPlaceholderImage("dutch-oven"), brand: "Amazon", clicks: 3600 },
+  { id: "prod3", pinId: "p2", title: "Cast iron skillet", image: pickPlaceholderImage("cast-iron-skillet"), brand: "Amazon", clicks: 2100 },
+  { id: "prod4", pinId: "p3", title: "Slip dress", image: pickPlaceholderImage("slip-dress"), brand: "Myntra", clicks: 1800 },
+  { id: "prod5", pinId: "p4", title: "Vitamin C serum", image: pickPlaceholderImage("serum-bottle"), brand: "Amazon", clicks: 1500 },
+  { id: "prod6", pinId: "p6", title: "Carry-on suitcase", image: pickPlaceholderImage("carry-on-suitcase"), brand: "Amazon", clicks: 1200 },
 ];
 // p5 "Rattan pendant lamp styling" deliberately has no products attached yet.
 
