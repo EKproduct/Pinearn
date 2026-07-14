@@ -144,3 +144,4 @@ vite.config.ts.timestamp-*
 
 .claude
 .lovable
+.DS_Store

@@ -493,7 +493,7 @@ function Footer() {
           <span>© {new Date().getFullYear()} Pinearn Labs</span>
         </div>
         <div className="flex gap-6">
-          <a href="#" className="hover:text-foreground">Privacy</a>
+          <Link to="/privacy" className="hover:text-foreground">Privacy</Link>
           <a href="#" className="hover:text-foreground">Terms</a>
           <a href="#" className="hover:text-foreground">Contact</a>
         </div>
