@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { ArrowRight, Loader2, ShieldCheck, Sparkles, Phone, KeyRound, ChevronLeft } from "lucide-react";
+import { ArrowRight, Loader2, Sparkles, Phone, KeyRound, ChevronLeft } from "lucide-react";
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
@@ -51,6 +51,7 @@ function AuthPage() {
   const fallback = (search.redirect as string) ?? "/dashboard";
 
   const [step, setStep] = useState<Step>("phone");
+  const [agreed, setAgreed] = useState(false);
   const [countryIdx, setCountryIdx] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [localPhone, setLocalPhone] = useState("");
@@ -275,10 +276,25 @@ function AuthPage() {
                   />
                 </div>
               </div>
+              <label className="mt-4 flex items-start gap-2.5 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => setAgreed(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary focus:ring-primary/40"
+                />
+                <span>
+                  I agree to the{" "}
+                  <Link to="/privacy" target="_blank" className="font-semibold text-primary hover:underline">
+                    Privacy Policy
+                  </Link>{" "}
+                  and Terms, including how Pinearn uses my phone number and Pinterest data.
+                </span>
+              </label>
               <button
                 type="submit"
-                disabled={sending}
-                className="mt-5 flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-primary px-5 py-4 text-base font-semibold text-primary-foreground shadow-glow transition disabled:opacity-50"
+                disabled={sending || !agreed}
+                className="mt-4 flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-primary px-5 py-4 text-base font-semibold text-primary-foreground shadow-glow transition disabled:opacity-50"
               >
                 {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : null}
                 Get OTP
@@ -293,6 +309,7 @@ function AuthPage() {
                 </div>
               )}
               <p className="mb-2.5 text-center text-sm text-muted-foreground">Enter 6-digit code</p>
+              <p className="mb-3 text-center text-xs text-muted-foreground/70">Dummy OTP is 123456</p>
               <div className="flex items-center justify-center gap-1 sm:gap-1.5">
                 {Array.from({ length: 6 }).map((_, i) => {
                   const val = otp[i] ?? "";
@@ -362,11 +379,6 @@ function AuthPage() {
             </form>
 
           )}
-
-          <p className="mt-5 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="h-4 w-4 text-accent" />
-            By continuing you agree to our <a href="#" className="underline">Terms</a>
-          </p>
         </div>
       </div>
     </div>
