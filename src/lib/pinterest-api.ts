@@ -1,0 +1,419 @@
+// Low-level Pinterest API v5 client. Server-only — every export here is only
+// ever called from inside `createServerFn` handlers, never from client code,
+// so the app secret and access tokens never reach the browser bundle.
+//
+// Uses only Web Crypto / TextEncoder (no `node:crypto`, no `Buffer`) so this
+// module runs unmodified whether the app is deployed on a Node server or an
+// edge/Workers runtime.
+
+const AUTHORIZE_URL = "https://www.pinterest.com/oauth/";
+// Trial access can only call the Sandbox environment (separate, private,
+// per-creator test boards/pins) — see PINTEREST_API_BASE_URL in .env. Flip
+// that env var to https://api.pinterest.com/v5 once Standard access is
+// granted; nothing else here needs to change.
+const SCOPES = "boards:read,boards:write,pins:read,pins:write,user_accounts:read";
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing environment variable: ${name}`);
+  return value;
+}
+
+const KNOWN_API_HOSTS = ["https://api.pinterest.com/v5", "https://api-sandbox.pinterest.com/v5"];
+
+function apiBase(): string {
+  const base = requireEnv("PINTEREST_API_BASE_URL").replace(/\/+$/, "");
+  if (!KNOWN_API_HOSTS.includes(base)) {
+    throw new Error(
+      `PINTEREST_API_BASE_URL is set to "${base}", which isn't a recognized Pinterest API host. ` +
+        `Expected one of: ${KNOWN_API_HOSTS.join(" or ")}`,
+    );
+  }
+  return base;
+}
+
+// Pinterest error bodies are usually `{ code, message }`; fall back to raw text
+// when the response isn't valid JSON so nothing gets silently swallowed.
+function describePinterestError(status: number, text: string): string {
+  try {
+    const body = JSON.parse(text) as { message?: string; code?: number };
+    if (body?.message) return `${body.message}${body.code != null ? ` (code ${body.code})` : ""}`;
+  } catch {
+    /* not JSON — fall through to raw text */
+  }
+  return text.slice(0, 500) || `HTTP ${status}`;
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const padded = value
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function toBase64Standard(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function basicAuthHeader(): string {
+  const id = requireEnv("PINTEREST_APP_ID");
+  const secret = requireEnv("PINTEREST_APP_SECRET");
+  return `Basic ${toBase64Standard(new TextEncoder().encode(`${id}:${secret}`))}`;
+}
+
+async function hmacSign(message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(requireEnv("PINTEREST_APP_SECRET")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return toBase64Url(new Uint8Array(sig));
+}
+
+// ---------------------------------------------------------------
+// Signed, stateless OAuth `state` — binds the callback to the user and
+// request that started it, without needing a server-side session store.
+// ---------------------------------------------------------------
+
+type OAuthState = { uid: string; nonce: string; exp: number; returnTo: string };
+
+export async function signOAuthState(payload: Omit<OAuthState, "nonce" | "exp">): Promise<string> {
+  const state: OAuthState = {
+    ...payload,
+    nonce: toBase64Url(crypto.getRandomValues(new Uint8Array(12))),
+    exp: Date.now() + 10 * 60_000, // 10 minutes to complete the OAuth round-trip
+  };
+  const body = toBase64Url(new TextEncoder().encode(JSON.stringify(state)));
+  const sig = await hmacSign(body);
+  return `${body}.${sig}`;
+}
+
+export async function verifyOAuthState(state: string, expectedUid: string): Promise<OAuthState> {
+  const [body, sig] = state.split(".");
+  if (!body || !sig) throw new Error("Malformed OAuth state");
+  const expectedSig = await hmacSign(body);
+  if (sig !== expectedSig) throw new Error("OAuth state signature mismatch");
+  const parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(body))) as OAuthState;
+  if (Date.now() > parsed.exp) throw new Error("OAuth state expired — please try connecting again");
+  if (parsed.uid !== expectedUid) throw new Error("OAuth state does not match the signed-in user");
+  return parsed;
+}
+
+export function buildAuthorizeUrl(state: string): string {
+  const url = new URL(AUTHORIZE_URL);
+  url.searchParams.set("client_id", requireEnv("PINTEREST_APP_ID"));
+  url.searchParams.set("redirect_uri", requireEnv("PINTEREST_REDIRECT_URI"));
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", SCOPES);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
+// ---------------------------------------------------------------
+// Token exchange / refresh
+// ---------------------------------------------------------------
+
+export type PinterestTokens = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number; // seconds
+  scope?: string;
+};
+
+async function tokenRequest(body: URLSearchParams): Promise<PinterestTokens> {
+  const res = await fetch(`${apiBase()}/oauth/token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: basicAuthHeader(),
+    },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Pinterest token request failed (${res.status}): ${describePinterestError(res.status, text)}`,
+    );
+  }
+  return res.json() as Promise<PinterestTokens>;
+}
+
+export function exchangeCode(code: string): Promise<PinterestTokens> {
+  return tokenRequest(
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: requireEnv("PINTEREST_REDIRECT_URI"),
+    }),
+  );
+}
+
+export function refreshAccessToken(refreshToken: string): Promise<PinterestTokens> {
+  return tokenRequest(
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  );
+}
+
+// ---------------------------------------------------------------
+// Authenticated REST calls
+// ---------------------------------------------------------------
+
+async function pinterestFetch(accessToken: string, path: string, init?: RequestInit) {
+  const res = await fetch(`${apiBase()}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const detail = describePinterestError(res.status, text);
+    if (res.status === 401) {
+      throw new Error(
+        `Pinterest rejected the access token calling ${path} (401 unauthorized: ${detail}). ` +
+          `The token is likely expired, revoked, or missing a required scope — reconnect Pinterest.`,
+      );
+    }
+    throw new Error(`Pinterest API ${path} failed (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
+// Pinterest returns timestamps like "2022-12-25T18:08:51" with no timezone
+// designator; its docs describe these as UTC, so pin down the offset
+// explicitly rather than letting each consumer (JS Date, Postgres) guess.
+function toUtcIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value}Z`;
+}
+
+export type PinterestBoard = {
+  id: string;
+  name: string;
+  description?: string | null;
+  createdAt: string | null;
+};
+
+export async function listBoards(accessToken: string): Promise<PinterestBoard[]> {
+  const boards: PinterestBoard[] = [];
+  let bookmark: string | undefined;
+  do {
+    const qs = new URLSearchParams({ page_size: "100" });
+    if (bookmark) qs.set("bookmark", bookmark);
+    const data = await pinterestFetch(accessToken, `/boards?${qs.toString()}`);
+    for (const b of data.items ?? []) {
+      boards.push({
+        id: b.id,
+        name: b.name,
+        description: b.description ?? null,
+        createdAt: toUtcIso(b.created_at),
+      });
+    }
+    bookmark = data.bookmark || undefined;
+  } while (bookmark);
+  return boards;
+}
+
+export type PinterestPin = {
+  id: string;
+  title: string | null;
+  description: string | null;
+  link: string | null;
+  imageUrl: string | null;
+  createdAt: string | null;
+};
+
+// Pinterest v5 returns `images` as a map keyed by size, e.g. `originals`,
+// `600x`, `1200x`, `400x300`, `150x150` (no guaranteed key or order) — pick
+// whichever variant has the largest reported width/height, preferring
+// `originals` when present.
+function largestImage(media: unknown): string | null {
+  const images = (media as { images?: Record<string, { url?: string; width?: number; height?: number }> } | undefined)
+    ?.images;
+  if (!images) return null;
+  if (images.originals?.url) return images.originals.url;
+
+  let best: { url: string; area: number } | null = null;
+  for (const [key, v] of Object.entries(images)) {
+    if (!v?.url) continue;
+    const dims = key.match(/^(\d+)x(\d+)?$/);
+    const area =
+      v.width && v.height
+        ? v.width * v.height
+        : dims
+          ? Number(dims[1]) * Number(dims[2] || dims[1])
+          : 0;
+    if (!best || area > best.area) best = { url: v.url, area };
+  }
+  return best?.url ?? null;
+}
+
+export async function listBoardPins(accessToken: string, boardId: string): Promise<PinterestPin[]> {
+  const pins: PinterestPin[] = [];
+  let bookmark: string | undefined;
+  do {
+    const qs = new URLSearchParams({ page_size: "100" });
+    if (bookmark) qs.set("bookmark", bookmark);
+    const data = await pinterestFetch(accessToken, `/boards/${boardId}/pins?${qs.toString()}`);
+    for (const p of data.items ?? []) {
+      pins.push({
+        id: p.id,
+        title: p.title ?? null,
+        description: p.description ?? null,
+        link: p.link ?? null,
+        imageUrl: largestImage(p.media),
+        createdAt: toUtcIso(p.created_at),
+      });
+    }
+    bookmark = data.bookmark || undefined;
+  } while (bookmark);
+  return pins;
+}
+
+export type PinterestAccount = {
+  username: string | null;
+  accountId: string | null;
+  businessName: string | null;
+  profileImage: string | null;
+  accountType: string | null;
+  pinCount: number;
+  boardCount: number;
+  followerCount: number;
+  followingCount: number;
+  monthlyViews: number;
+};
+
+export async function getUserAccount(accessToken: string): Promise<PinterestAccount> {
+  const data = await pinterestFetch(accessToken, "/user_account");
+  return {
+    username: data.username ?? null,
+    accountId: data.id ?? null,
+    businessName: data.business_name ?? null,
+    profileImage: data.profile_image ?? null,
+    accountType: data.account_type ?? null,
+    pinCount: Number(data.pin_count ?? 0),
+    boardCount: Number(data.board_count ?? 0),
+    followerCount: Number(data.follower_count ?? 0),
+    followingCount: Number(data.following_count ?? 0),
+    monthlyViews: Number(data.monthly_views ?? 0),
+  };
+}
+
+// Account-wide traffic for a date range (max 90 days back — Pinterest rejects
+// anything older with "You can only get data from the last 90 days").
+export type PinterestAccountAnalytics = {
+  impressions: number;
+  pinClicks: number;
+  outboundClicks: number;
+  saves: number;
+  engagement: number;
+};
+
+const ANALYTICS_METRIC_TYPES = "IMPRESSION,PIN_CLICK,OUTBOUND_CLICK,SAVE,ENGAGEMENT";
+
+function toAnalyticsMetrics(summary: Record<string, number> | undefined): PinterestAccountAnalytics {
+  return {
+    impressions: Number(summary?.IMPRESSION ?? 0),
+    pinClicks: Number(summary?.PIN_CLICK ?? 0),
+    outboundClicks: Number(summary?.OUTBOUND_CLICK ?? 0),
+    saves: Number(summary?.SAVE ?? 0),
+    engagement: Number(summary?.ENGAGEMENT ?? 0),
+  };
+}
+
+export async function getAccountAnalytics(
+  accessToken: string,
+  range: { startDate: Date; endDate: Date },
+): Promise<PinterestAccountAnalytics> {
+  const qs = new URLSearchParams({
+    start_date: range.startDate.toISOString().slice(0, 10),
+    end_date: range.endDate.toISOString().slice(0, 10),
+    metric_types: ANALYTICS_METRIC_TYPES,
+  });
+  const data = await pinterestFetch(accessToken, `/user_account/analytics?${qs.toString()}`);
+  return toAnalyticsMetrics(data?.all?.summary_metrics);
+}
+
+export type PinterestTopPin = { pinId: string } & PinterestAccountAnalytics;
+
+export async function getTopPinsAnalytics(
+  accessToken: string,
+  range: { startDate: Date; endDate: Date; limit?: number },
+): Promise<PinterestTopPin[]> {
+  const qs = new URLSearchParams({
+    start_date: range.startDate.toISOString().slice(0, 10),
+    end_date: range.endDate.toISOString().slice(0, 10),
+    metric_types: ANALYTICS_METRIC_TYPES,
+    sort_by: "IMPRESSION",
+  });
+  const data = await pinterestFetch(accessToken, `/user_account/analytics/top_pins?${qs.toString()}`);
+  const items = (data?.pins ?? []) as Array<{ pin_id: string; metrics: Record<string, number> }>;
+  return items.slice(0, range.limit ?? 25).map((p) => ({ pinId: p.pin_id, ...toAnalyticsMetrics(p.metrics) }));
+}
+
+export async function createPin(
+  accessToken: string,
+  input: { boardId: string; title: string; description?: string; link?: string; imageUrl: string },
+): Promise<PinterestPin> {
+  const data = await pinterestFetch(accessToken, "/pins", {
+    method: "POST",
+    body: JSON.stringify({
+      board_id: input.boardId,
+      title: input.title,
+      description: input.description || undefined,
+      link: input.link || undefined,
+      media_source: { source_type: "image_url", url: input.imageUrl },
+    }),
+  });
+  return {
+    id: data.id,
+    title: data.title ?? null,
+    description: data.description ?? null,
+    link: data.link ?? null,
+    imageUrl: largestImage(data.media),
+    createdAt: toUtcIso(data.created_at),
+  };
+}
+
+export async function getPinAnalytics(
+  accessToken: string,
+  pinId: string,
+): Promise<{ impressions: number; clicks: number }> {
+  const end = new Date();
+  const start = new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const qs = new URLSearchParams({
+    start_date: start.toISOString().slice(0, 10),
+    end_date: end.toISOString().slice(0, 10),
+    metric_types: "IMPRESSION,PIN_CLICK",
+  });
+  try {
+    const data = await pinterestFetch(accessToken, `/pins/${pinId}/analytics?${qs.toString()}`);
+    const summary = data?.all?.summary_metrics ?? data?.summary_metrics ?? {};
+    return {
+      impressions: Number(summary.IMPRESSION ?? 0),
+      clicks: Number(summary.PIN_CLICK ?? 0),
+    };
+  } catch {
+    // Analytics can lag behind a freshly-created Pin, or be unavailable in
+    // Sandbox — don't fail the whole sync over one Pin's metrics.
+    return { impressions: 0, clicks: 0 };
+  }
+}

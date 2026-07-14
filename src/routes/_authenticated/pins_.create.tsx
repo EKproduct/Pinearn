@@ -18,9 +18,11 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { visualSearchImage } from "@/lib/pinterest.functions";
+import { visualSearchImage, createPinterestPin } from "@/lib/pinterest.functions";
 import { pickPlaceholderImage } from "@/lib/placeholder-image";
 import type { Collection, Product, Storefront } from "./pins";
+
+type PinterestBoard = { id: string; name: string };
 
 export const Route = createFileRoute("/_authenticated/pins_/create")({
   component: CreatePinWizard,
@@ -45,10 +47,31 @@ function CreatePinWizard() {
   const [uploading, setUploading] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  
+
   const [storefrontId, setStorefrontId] = useState<string>("");
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [boardId, setBoardId] = useState<string>("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const runCreatePinterestPin = useServerFn(createPinterestPin);
+
+  const { data: boards = [] } = useQuery({
+    queryKey: ["pinterest-boards"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("collections")
+        .select("id,name,pinterest_board_id")
+        .not("pinterest_board_id", "is", null)
+        .order("position", { ascending: true });
+      return ((data ?? []) as { id: string; name: string }[]).map((c) => ({
+        id: c.id,
+        name: c.name,
+      })) as PinterestBoard[];
+    },
+  });
+
+  useEffect(() => {
+    if (!boardId && boards.length > 0) setBoardId(boards[0].id);
+  }, [boards, boardId]);
 
   const { data: storefronts = [] } = useQuery({
     queryKey: ["storefronts"],
@@ -122,27 +145,24 @@ function CreatePinWizard() {
 
   const publish = useMutation({
     mutationFn: async () => {
-      // Simulate Pinterest publish latency
-      await new Promise((r) => setTimeout(r, 1200));
+      if (!boardId) throw new Error("Sync a Pinterest board from Storefront first");
+      if (!imageUrl) throw new Error("Add an image first");
 
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes.user!.id;
       const primaryProduct = selectedProducts[0];
       const external = activeStorefront
         ? `${window.location.origin}/s/${activeStorefront.slug}`
-        : primaryProduct?.affiliate_url || null;
+        : primaryProduct?.affiliate_url || undefined;
 
-      const { error } = await supabase.from("pins").insert({
-        user_id: uid,
-        title: title.trim() || "Untitled pin",
-        description: description.trim() || null,
-        image_url: imageUrl || null,
-        storefront_id: derivedStorefrontId || null,
-        product_id: primaryProduct?.id ?? null,
-        external_url: external,
-        status: "live",
+      await runCreatePinterestPin({
+        data: {
+          collectionId: boardId,
+          title: title.trim() || "Untitled pin",
+          description: description.trim() || undefined,
+          imageUrl,
+          link: external,
+          productId: primaryProduct?.id,
+        },
       });
-      if (error) throw error;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["pins"] });
@@ -161,7 +181,13 @@ function CreatePinWizard() {
   }
 
   return (
-    <AppShell title="Create pin" subtitle={STEP_LABELS[step]} backButton hideNotifications hideBottomNav>
+    <AppShell
+      title="Create pin"
+      subtitle={STEP_LABELS[step]}
+      backButton
+      hideNotifications
+      hideBottomNav
+    >
       <input
         ref={fileRef}
         type="file"
@@ -243,6 +269,9 @@ function CreatePinWizard() {
             description={description}
             storefront={activeStorefront}
             products={selectedProducts}
+            boards={boards}
+            boardId={boardId}
+            setBoardId={setBoardId}
           />
         )}
       </div>
@@ -260,7 +289,7 @@ function CreatePinWizard() {
           ) : (
             <button
               onClick={() => publish.mutate()}
-              disabled={publish.isPending}
+              disabled={publish.isPending || !boardId}
               className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition active:scale-[0.98] disabled:opacity-70"
             >
               {publish.isPending ? (
@@ -399,7 +428,7 @@ function StepProducts({
 }) {
   const qc = useQueryClient();
   const runVisualSearch = useServerFn(visualSearchImage);
-  
+
   const [manualUrl, setManualUrl] = useState("");
   const [aiProductIds, setAiProductIds] = useState<Record<number, string>>({});
   const [manualProductIds, setManualProductIds] = useState<Set<string>>(new Set());
@@ -487,7 +516,6 @@ function StepProducts({
     }
   };
 
-
   const toggleAIRef = useRef(toggleAI);
   toggleAIRef.current = toggleAI;
 
@@ -517,9 +545,7 @@ function StepProducts({
       if (!targetStorefront) throw new Error("Create a storefront first.");
 
       const normalize = (u: string) => u.trim().replace(/\/+$/, "").toLowerCase();
-      const existing = products.find(
-        (p) => normalize(p.affiliate_url) === normalize(url),
-      );
+      const existing = products.find((p) => normalize(p.affiliate_url) === normalize(url));
       if (existing) return { id: existing.id, duplicate: true as const };
 
       const { data: userRes } = await supabase.auth.getUser();
@@ -551,9 +577,7 @@ function StepProducts({
       if (!selectedIds.includes(id)) toggle(id);
       setManualProductIds((prev) => new Set(prev).add(id));
       setManualUrl("");
-      toast.success(
-        duplicate ? "Already in Your products — selected" : "Added to Your products",
-      );
+      toast.success(duplicate ? "Already in Your products — selected" : "Added to Your products");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -564,11 +588,7 @@ function StepProducts({
       {imageUrl && (
         <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
           <div className="relative mx-auto aspect-[4/5] max-h-72 w-full">
-            <img
-              src={imageUrl}
-              alt=""
-              className="absolute inset-0 h-full w-full object-cover"
-            />
+            <img src={imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
             {aiLoading && (
               <>
                 <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
@@ -784,7 +804,6 @@ function StepProducts({
   );
 }
 
-
 function FilterChip({
   active,
   onClick,
@@ -814,16 +833,44 @@ function StepReview({
   description,
   storefront,
   products,
+  boards,
+  boardId,
+  setBoardId,
 }: {
   imageUrl: string;
   title: string;
   description: string;
   storefront: Storefront | undefined;
   products: Product[];
+  boards: PinterestBoard[];
+  boardId: string;
+  setBoardId: (id: string) => void;
 }) {
   return (
     <div className="space-y-5">
       <h2 className="font-display text-xl font-bold">Ready to publish</h2>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium">Pinterest board</label>
+        {boards.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-3 text-xs text-muted-foreground">
+            No synced boards yet — sync your Pinterest boards from Storefront first.
+          </p>
+        ) : (
+          <select
+            value={boardId}
+            onChange={(e) => setBoardId(e.target.value)}
+            className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
+          >
+            {boards.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
       <div className="overflow-hidden rounded-3xl border border-border bg-surface">
         {imageUrl && <img src={imageUrl} alt="" className="max-h-[420px] w-full object-cover" />}
         <div className="space-y-3 p-5">
@@ -833,7 +880,9 @@ function StepReview({
             <div className="flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2 text-xs font-medium text-primary">
               <Store className="h-4 w-4" /> {storefront.name}
               {products.length > 0 && (
-                <span className="text-primary/70">· {products.length} product{products.length === 1 ? "" : "s"}</span>
+                <span className="text-primary/70">
+                  · {products.length} product{products.length === 1 ? "" : "s"}
+                </span>
               )}
             </div>
           )}

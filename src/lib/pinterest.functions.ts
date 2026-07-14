@@ -1,6 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import {
+  createPin as createPinterestPinRemote,
+  getAccountAnalytics,
+  getPinAnalytics,
+  getTopPinsAnalytics,
+  getUserAccount,
+  listBoardPins,
+  listBoards,
+} from "@/lib/pinterest-api";
+import { getValidPinterestToken } from "@/lib/pinterest-oauth.functions";
 
 // -------------------------------------------------------------
 // Helpers
@@ -16,74 +26,11 @@ function slugify(s: string) {
   );
 }
 
-// Deterministic mock "Pinterest boards" per handle so the demo feels real.
-const BOARD_TEMPLATES: {
-  name: string;
-  description: string;
-  color: string;
-  pins: { title: string; description: string }[];
-}[] = [
-  {
-    name: "Home & Kitchen",
-    description: "Cozy home upgrades and kitchen essentials.",
-    color: "#F97316",
-    pins: [
-      { title: "Coffee bar refresh", description: "My favorite mugs, grinder and beans." },
-      { title: "Minimalist kitchen tools", description: "10 tools I actually use every week." },
-      { title: "Cozy lighting picks", description: "Warm bulbs, floor lamps, dimmers." },
-      { title: "Under-₹4,000 upgrades", description: "Small swaps, big vibe shift." },
-    ],
-  },
-  {
-    name: "Style & Outfits",
-    description: "Capsule outfits and everyday style.",
-    color: "#EC4899",
-    pins: [
-      { title: "Autumn capsule wardrobe", description: "12 pieces, 30 outfits." },
-      { title: "Denim jacket, 3 ways", description: "Casual → smart → evening." },
-      { title: "Everyday sneakers", description: "The pairs I keep re-buying." },
-      { title: "Sunset street style", description: "Golden hour outfit inspo." },
-    ],
-  },
-  {
-    name: "Beauty & Skincare",
-    description: "Routines and products that actually work.",
-    color: "#8B5CF6",
-    pins: [
-      { title: "5-minute morning routine", description: "Cleanser, serum, SPF." },
-      { title: "Barrier-repair basics", description: "Ceramides, niacinamide, patience." },
-      { title: "Travel skincare kit", description: "Under 100ml, works anywhere." },
-    ],
-  },
-  {
-    name: "Travel",
-    description: "Packing lists and destination guides.",
-    color: "#06B6D4",
-    pins: [
-      { title: "Minimalist packing", description: "A week in one carry-on." },
-      { title: "Best travel bag", description: "Tested across 12 trips." },
-      { title: "In-flight essentials", description: "The kit that saves long-hauls." },
-    ],
-  },
-];
-
-const PLACEHOLDER_IMAGES = [
-  "https://images.unsplash.com/photo-1522152168539-3e17b1f851f8?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1503602642458-232111445657?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1493770348161-369560ae357d?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=60",
-  "https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=800&q=60",
-];
-
 // -------------------------------------------------------------
-// Import Pinterest boards → Collections + Pins into the single storefront
+// Import real Pinterest boards + pins → Collections + Pins in the storefront.
+// Idempotent: re-running only adds boards/pins not already synced, keyed on
+// the real Pinterest board/pin id (see collections.pinterest_board_id and
+// pins.pinterest_pin_id unique indexes).
 // -------------------------------------------------------------
 
 export const importPinterestBoards = createServerFn({ method: "POST" })
@@ -99,57 +46,294 @@ export const importPinterestBoards = createServerFn({ method: "POST" })
     if (sErr) throw new Error(sErr.message);
     if (!storefront) throw new Error("No storefront found for user");
 
+    const accessToken = await getValidPinterestToken(userId);
+    const boards = [...(await listBoards(accessToken))].sort((a, b) => {
+      const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bt - at; // newest board first
+    });
+
     let boardsCreated = 0;
     let pinsCreated = 0;
 
-    for (const [bIdx, tpl] of BOARD_TEMPLATES.entries()) {
-      const slug = slugify(tpl.name);
+    const { data: existingCollections } = await supabase
+      .from("collections")
+      .select("id, pinterest_board_id")
+      .eq("storefront_id", storefront.id)
+      .not("pinterest_board_id", "is", null);
+    const existingByBoardId = new Map(
+      (existingCollections ?? []).map((c) => [c.pinterest_board_id as string, c.id]),
+    );
 
-      // Skip if already imported (unique per storefront_id+slug)
-      const { data: existing } = await supabase
-        .from("collections")
-        .select("id")
-        .eq("storefront_id", storefront.id)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (existing) continue;
+    const { data: existingPositions } = await supabase
+      .from("collections")
+      .select("position")
+      .eq("storefront_id", storefront.id)
+      .order("position", { ascending: false })
+      .limit(1);
+    let nextPosition = (existingPositions?.[0]?.position ?? -1) + 1;
 
-      const { data: coll, error: cErr } = await supabase
-        .from("collections")
-        .insert({
-          user_id: userId,
-          storefront_id: storefront.id,
-          name: tpl.name,
-          slug,
-          description: tpl.description,
-          cover_color: tpl.color,
-          source: "pinterest",
-          position: bIdx,
-        })
-        .select("id")
-        .single();
-      if (cErr) throw new Error(cErr.message);
-      boardsCreated++;
+    // Board names can be emoji-only or otherwise collapse to the same slug
+    // (e.g. "-🎵" and "_📝" both strip down to the "board" fallback) — track
+    // every slug already used in this storefront and disambiguate collisions
+    // with a numeric suffix, the same way the default-storefront trigger does.
+    const { data: existingSlugRows } = await supabase
+      .from("collections")
+      .select("slug")
+      .eq("storefront_id", storefront.id);
+    const usedSlugs = new Set((existingSlugRows ?? []).map((c) => c.slug as string));
 
-      const pinRows = tpl.pins.map((p, i) => ({
-        user_id: userId,
-        storefront_id: storefront.id,
-        collection_id: coll.id,
-        title: p.title,
-        description: p.description,
-        image_url: PLACEHOLDER_IMAGES[(bIdx * 4 + i) % PLACEHOLDER_IMAGES.length],
-        source: "pinterest",
-        status: "live",
-        impressions: Math.floor(500 + Math.random() * 8000),
-        clicks: Math.floor(20 + Math.random() * 800),
-      }));
-
-      const { error: pErr } = await supabase.from("pins").insert(pinRows);
-      if (pErr) throw new Error(pErr.message);
-      pinsCreated += pinRows.length;
+    function uniqueSlug(name: string): string {
+      const base = slugify(name);
+      if (!usedSlugs.has(base)) {
+        usedSlugs.add(base);
+        return base;
+      }
+      let n = 2;
+      while (usedSlugs.has(`${base}-${n}`)) n++;
+      const candidate = `${base}-${n}`;
+      usedSlugs.add(candidate);
+      return candidate;
     }
 
-    return { boardsCreated, pinsCreated };
+    const failedBoards: string[] = [];
+
+    for (const board of boards) {
+      let collectionId = existingByBoardId.get(board.id);
+
+      if (!collectionId) {
+        const { data: coll, error: cErr } = await supabase
+          .from("collections")
+          .insert({
+            user_id: userId,
+            storefront_id: storefront.id,
+            name: board.name,
+            slug: uniqueSlug(board.name),
+            description: board.description ?? null,
+            source: "pinterest",
+            pinterest_board_id: board.id,
+            position: nextPosition++,
+          })
+          .select("id")
+          .single();
+        if (cErr) {
+          // Don't let one bad board abort the whole sync — skip it and keep going.
+          failedBoards.push(`${board.name || board.id}: ${cErr.message}`);
+          continue;
+        }
+        collectionId = coll.id;
+        boardsCreated++;
+      }
+
+      const pins = await listBoardPins(accessToken, board.id);
+      if (pins.length === 0) continue;
+
+      const { data: existingPins } = await supabase
+        .from("pins")
+        .select("pinterest_pin_id")
+        .eq("collection_id", collectionId)
+        .not("pinterest_pin_id", "is", null);
+      const alreadySynced = new Set((existingPins ?? []).map((p) => p.pinterest_pin_id as string));
+
+      const newPinRows = pins
+        .filter((p) => !alreadySynced.has(p.id))
+        .map((p) => ({
+          user_id: userId,
+          storefront_id: storefront.id,
+          collection_id: collectionId,
+          title: p.title || "Untitled pin",
+          description: p.description,
+          image_url: p.imageUrl,
+          external_url: p.link,
+          source: "pinterest",
+          // No product attached yet at import time — stays a draft until the
+          // user attaches one, matching the manual create-pin flow's rule.
+          status: "draft",
+          pinterest_pin_id: p.id,
+          // Preserve the pin's real Pinterest creation time so the pins list
+          // (sorted by created_at) reflects actual posting order, not sync order.
+          ...(p.createdAt ? { created_at: p.createdAt } : {}),
+        }));
+      if (newPinRows.length === 0) continue;
+
+      const { error: pErr } = await supabase.from("pins").insert(newPinRows);
+      if (pErr) {
+        failedBoards.push(`${board.name || board.id} (pins): ${pErr.message}`);
+        continue;
+      }
+      pinsCreated += newPinRows.length;
+    }
+
+    if (failedBoards.length > 0) {
+      console.error("[importPinterestBoards] skipped boards:", failedBoards);
+    }
+
+    return { boardsCreated, pinsCreated, skipped: failedBoards.length };
+  });
+
+// -------------------------------------------------------------
+// Publish a real Pin to one of the user's synced Pinterest boards.
+// -------------------------------------------------------------
+
+export const createPinterestPin = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    (d: {
+      collectionId: string;
+      title: string;
+      description?: string;
+      imageUrl: string;
+      link?: string;
+      productId?: string;
+    }) =>
+      z
+        .object({
+          collectionId: z.string().uuid(),
+          title: z.string().min(1).max(100),
+          description: z.string().max(500).optional(),
+          imageUrl: z.string().url(),
+          link: z.string().url().optional(),
+          productId: z.string().uuid().optional(),
+        })
+        .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+
+    const { data: collection, error: cErr } = await supabase
+      .from("collections")
+      .select("id, storefront_id, pinterest_board_id")
+      .eq("id", data.collectionId)
+      .maybeSingle();
+    if (cErr) throw new Error(cErr.message);
+    if (!collection?.pinterest_board_id) {
+      throw new Error("Pick a board that's synced from Pinterest first.");
+    }
+
+    const accessToken = await getValidPinterestToken(userId);
+    const pin = await createPinterestPinRemote(accessToken, {
+      boardId: collection.pinterest_board_id,
+      title: data.title,
+      description: data.description,
+      link: data.link,
+      imageUrl: data.imageUrl,
+    });
+
+    const { data: inserted, error: pErr } = await supabase
+      .from("pins")
+      .insert({
+        user_id: userId,
+        storefront_id: collection.storefront_id,
+        collection_id: collection.id,
+        product_id: data.productId ?? null,
+        title: data.title,
+        description: data.description || null,
+        image_url: data.imageUrl,
+        external_url: data.link || null,
+        source: "pinterest",
+        status: "live",
+        pinterest_pin_id: pin.id,
+      })
+      .select("id")
+      .single();
+    if (pErr) throw new Error(pErr.message);
+
+    return { id: inserted.id, pinterestPinId: pin.id };
+  });
+
+// -------------------------------------------------------------
+// Refresh real impressions/clicks for already-published pins.
+// -------------------------------------------------------------
+
+export const syncPinterestAnalytics = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabase, userId } = context;
+    const accessToken = await getValidPinterestToken(userId);
+
+    const { data: pins, error } = await supabase
+      .from("pins")
+      .select("id, pinterest_pin_id")
+      .eq("user_id", userId)
+      .not("pinterest_pin_id", "is", null);
+    if (error) throw new Error(error.message);
+
+    let updated = 0;
+    for (const p of pins ?? []) {
+      const stats = await getPinAnalytics(accessToken, p.pinterest_pin_id as string);
+      const { error: updErr } = await supabase
+        .from("pins")
+        .update({ impressions: stats.impressions, clicks: stats.clicks })
+        .eq("id", p.id);
+      if (!updErr) updated++;
+    }
+
+    return { updated };
+  });
+
+// -------------------------------------------------------------
+// Real Pinterest traffic analytics for the Analytics page. Everything here
+// is genuine Pinterest data (account totals + account/pin-level Impressions,
+// Pin clicks, Outbound clicks, Saves, Engagement) — there is no orders/sales/
+// commission data anywhere in Pinterest's API, so that's handled separately
+// on the client as an explicit zero state, not faked here.
+// -------------------------------------------------------------
+
+const ANALYTICS_RANGES = ["7d", "30d", "90d"] as const;
+// Pinterest's analytics endpoints reject any start_date older than 90 days.
+const ANALYTICS_RANGE_DAYS: Record<(typeof ANALYTICS_RANGES)[number], number> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+};
+
+export const getPinterestAnalytics = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: { range: "7d" | "30d" | "90d" }) =>
+    z.object({ range: z.enum(ANALYTICS_RANGES) }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const accessToken = await getValidPinterestToken(userId);
+
+    const endDate = new Date();
+    const startDate = new Date(endDate.getTime() - ANALYTICS_RANGE_DAYS[data.range] * 86400000);
+
+    const [account, overview, topPins] = await Promise.all([
+      getUserAccount(accessToken),
+      getAccountAnalytics(accessToken, { startDate, endDate }),
+      getTopPinsAnalytics(accessToken, { startDate, endDate, limit: 25 }),
+    ]);
+
+    // Join Pinterest's pin ids back to our own synced pin rows for title/image —
+    // only show pins we actually have a local record of.
+    const pinterestPinIds = topPins.map((p) => p.pinId);
+    const { data: ourPins } = pinterestPinIds.length
+      ? await supabase
+          .from("pins")
+          .select("id, title, image_url, pinterest_pin_id")
+          .in("pinterest_pin_id", pinterestPinIds)
+      : { data: [] as { id: string; title: string; image_url: string | null; pinterest_pin_id: string | null }[] };
+    const byPinterestId = new Map((ourPins ?? []).map((p) => [p.pinterest_pin_id, p]));
+
+    const pins = topPins
+      .map((tp) => {
+        const local = byPinterestId.get(tp.pinId);
+        if (!local) return null;
+        return {
+          id: local.id,
+          title: local.title,
+          imageUrl: local.image_url,
+          impressions: tp.impressions,
+          pinClicks: tp.pinClicks,
+          outboundClicks: tp.outboundClicks,
+          saves: tp.saves,
+          engagement: tp.engagement,
+        };
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+
+    return { account, overview, pins };
   });
 
 // -------------------------------------------------------------
@@ -170,9 +354,7 @@ const suggestionsSchema = z.object({
 
 export const visualSearchPin = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { pinId: string }) =>
-    z.object({ pinId: z.string().uuid() }).parse(d),
-  )
+  .inputValidator((d: { pinId: string }) => z.object({ pinId: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     const { supabase } = context;
 
@@ -223,8 +405,7 @@ export const visualSearchPin = createServerFn({ method: "POST" })
         content:
           | string
           | Array<
-              | { type: "text"; text: string }
-              | { type: "image_url"; image_url: { url: string } }
+              { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
             >;
       }> = [
         { role: "system", content: systemPrompt },
@@ -233,31 +414,26 @@ export const visualSearchPin = createServerFn({ method: "POST" })
           content: [
             { type: "text", text: userText },
             ...(pin.image_url
-              ? ([
-                  { type: "image_url", image_url: { url: pin.image_url } },
-                ] as const)
+              ? ([{ type: "image_url", image_url: { url: pin.image_url } }] as const)
               : []),
           ],
         },
       ];
 
-      const res = await fetch(
-        "https://ai.gateway.lovable.dev/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            // Pro model = stronger vision + more thorough enumeration
-            model: "google/gemini-2.5-pro",
-            messages,
-            response_format: { type: "json_object" },
-            temperature: 0.2,
-          }),
+      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
-      );
+        body: JSON.stringify({
+          // Pro model = stronger vision + more thorough enumeration
+          model: "google/gemini-2.5-pro",
+          messages,
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+        }),
+      });
 
       if (!res.ok) {
         console.error("[visualSearch] gateway error", res.status, await res.text());
@@ -265,9 +441,7 @@ export const visualSearchPin = createServerFn({ method: "POST" })
       }
       const body = await res.json();
       const raw = body?.choices?.[0]?.message?.content ?? "{}";
-      const parsed = suggestionsSchema.safeParse(
-        typeof raw === "string" ? JSON.parse(raw) : raw,
-      );
+      const parsed = suggestionsSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
       if (!parsed.success || parsed.data.suggestions.length === 0) {
         return { suggestions: fallbackSuggestions(pin.title) };
       }
@@ -280,7 +454,6 @@ export const visualSearchPin = createServerFn({ method: "POST" })
         return true;
       });
       return { suggestions: deduped };
-
     } catch (e) {
       console.error("[visualSearch] failed", e);
       return { suggestions: fallbackSuggestions(pin.title) };
@@ -337,9 +510,7 @@ export const visualSearchImage = createServerFn({ method: "POST" })
       if (!res.ok) return { suggestions: fallbackSuggestions(data.title) };
       const body = await res.json();
       const raw = body?.choices?.[0]?.message?.content ?? "{}";
-      const parsed = suggestionsSchema.safeParse(
-        typeof raw === "string" ? JSON.parse(raw) : raw,
-      );
+      const parsed = suggestionsSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
       if (!parsed.success || parsed.data.suggestions.length === 0) {
         return { suggestions: fallbackSuggestions(data.title) };
       }
@@ -366,9 +537,10 @@ function fallbackSuggestions(title: string) {
     { key: "travel", items: ["Carry-on backpack", "Packing cubes", "Travel adapter"] },
     { key: "desk", items: ["4K monitor", "Ergonomic chair", "Desk mat"] },
   ];
-  const match =
-    base.find((b) => t.includes(b.key)) ??
-    { key: "picks", items: ["Best-seller pick", "Editor's choice", "Budget favorite"] };
+  const match = base.find((b) => t.includes(b.key)) ?? {
+    key: "picks",
+    items: ["Best-seller pick", "Editor's choice", "Budget favorite"],
+  };
   return match.items.map((name) => ({
     title: name,
     query: name,

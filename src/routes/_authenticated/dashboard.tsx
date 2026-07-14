@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { BrandsSection } from "@/components/brand-card";
 import { BEST_SELLING_BRANDS } from "@/lib/brands";
 import { openAffiliateLinkDialog } from "@/components/affiliate-link-dialog";
-import { PINS } from "./analytics";
+import { supabase } from "@/integrations/supabase/client";
 import { useEffect, useState } from "react";
 import {
   IndianRupee,
@@ -17,6 +18,7 @@ import {
   ChevronRight,
   Plus,
   ArrowRight,
+  Layers,
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -157,7 +159,18 @@ function Dashboard() {
 
 
 function TopPins() {
-  const top5 = PINS.slice(0, 5);
+  const { data: topPins = [], isLoading } = useQuery({
+    queryKey: ["dashboard-top-pins"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("pins")
+        .select("id, title, image_url, clicks, earnings_cents")
+        .order("clicks", { ascending: false })
+        .limit(5);
+      return data ?? [];
+    },
+  });
+
   return (
     <div className="mt-6 rounded-2xl border border-border bg-surface p-5">
       <div className="mb-4 flex items-center justify-between">
@@ -169,36 +182,53 @@ function TopPins() {
           View analytics
         </Link>
       </div>
-      <ul className="divide-y divide-border">
-        {top5.map((p, i) => (
-          <li key={p.id} className="flex items-center gap-3 py-3">
-            <div className="w-5 text-center text-xs font-medium text-muted-foreground">
-              {i + 1}
-            </div>
-            <img
-              src={p.image}
-              alt={p.title}
-              className="h-14 w-14 flex-shrink-0 rounded-lg object-cover"
-              loading="lazy"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium">{p.title}</div>
-              <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <MousePointerClick className="h-3 w-3" /> {fmt(p.clicks)} clicks
-                </span>
+      {isLoading ? (
+        <div className="py-6 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : topPins.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border bg-surface-2/40 py-8 text-center">
+          <Layers className="h-5 w-5 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
+            No pins yet — connect Pinterest and sync your boards to see your top pins here.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {topPins.map((p, i) => (
+            <li key={p.id} className="flex items-center gap-3 py-3">
+              <div className="w-5 text-center text-xs font-medium text-muted-foreground">
+                {i + 1}
               </div>
-            </div>
-            <div className="text-right">
-              <div className="inline-flex items-center font-display text-sm font-semibold">
-                <IndianRupee className="h-3.5 w-3.5" />
-                {fmt(p.earnings)}
+              {p.image_url ? (
+                <img
+                  src={p.image_url}
+                  alt={p.title}
+                  className="h-14 w-14 flex-shrink-0 rounded-lg object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="grid h-14 w-14 flex-shrink-0 place-items-center rounded-lg bg-surface-2 text-muted-foreground">
+                  <ImagePlus className="h-5 w-5" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{p.title}</div>
+                <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <MousePointerClick className="h-3 w-3" /> {fmt(p.clicks)} clicks
+                  </span>
+                </div>
               </div>
-              <div className="text-[10px] text-muted-foreground">earned</div>
-            </div>
-          </li>
-        ))}
-      </ul>
+              <div className="text-right">
+                <div className="inline-flex items-center font-display text-sm font-semibold">
+                  <IndianRupee className="h-3.5 w-3.5" />
+                  {fmt(Math.round(p.earnings_cents / 100))}
+                </div>
+                <div className="text-[10px] text-muted-foreground">earned</div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
@@ -15,12 +16,15 @@ import {
 } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { importPinterestBoards } from "@/lib/pinterest.functions";
-import {
-  PinterestSyncModal,
-  type SyncStatus,
-} from "@/components/pinterest-sync-modal";
+import { startPinterestOAuth } from "@/lib/pinterest-oauth.functions";
+import { PinterestSyncModal, type SyncStatus } from "@/components/pinterest-sync-modal";
+
+const searchSchema = z.object({
+  connected: z.string().optional(),
+});
 
 export const Route = createFileRoute("/_authenticated/onboarding")({
+  validateSearch: (s) => searchSchema.parse(s),
   component: OnboardingPage,
 });
 
@@ -36,10 +40,12 @@ function PinterestIcon({ className = "h-4 w-4" }: { className?: string }) {
 
 function OnboardingPage() {
   const navigate = useNavigate();
+  const search = Route.useSearch();
   const runImport = useServerFn(importPinterestBoards);
+  const runStartOAuth = useServerFn(startPinterestOAuth);
 
   const [userId, setUserId] = useState<string | null>(null);
-  const [phase, setPhase] = useState<Phase>("name");
+  const [phase, setPhase] = useState<Phase>(search.connected === "1" ? "sync" : "name");
   const [authorizing, setAuthorizing] = useState(false);
   const [name, setName] = useState("");
   const [savingName, setSavingName] = useState(false);
@@ -58,6 +64,11 @@ function OnboardingPage() {
       if (!data.user) return;
       setUserId(data.user.id);
     });
+    if (search.connected === "1") {
+      toast.success("Pinterest connected");
+      setTimeout(() => startSync(), 300);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function saveName(e?: React.FormEvent) {
@@ -75,47 +86,16 @@ function OnboardingPage() {
     setPhase("authorize");
   }
 
-
   async function authorizePinterest() {
     if (!userId) return;
     setAuthorizing(true);
-    // Simulate Pinterest OAuth authorize round-trip
-    const popup = window.open(
-      "about:blank",
-      "pinterest_oauth",
-      "width=520,height=680,menubar=no,toolbar=no",
-    );
-    if (popup) {
-      popup.document.write(`
-        <html><head><title>Authorize Pinearn · Pinterest</title>
-        <style>
-          body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-            background:#fff;color:#111;margin:0;padding:32px;text-align:center}
-          .p{width:56px;height:56px;border-radius:50%;background:#E60023;color:#fff;
-            display:grid;place-items:center;margin:0 auto 16px;font-weight:700;font-size:26px}
-          .b{background:#E60023;color:#fff;border:0;border-radius:999px;padding:10px 22px;
-            font-weight:600;margin-top:20px;cursor:pointer}
-        </style></head>
-        <body><div class="p">P</div>
-          <h2>Authorize Pinearn</h2>
-          <p style="color:#555;font-size:14px;max-width:320px;margin:12px auto">
-            Pinearn is requesting access to read your boards, pins and profile.</p>
-          <p style="color:#888;font-size:12px">You'll be redirected back automatically.</p>
-        </body></html>`);
+    try {
+      const { url } = await runStartOAuth({ data: { returnTo: "/onboarding" } });
+      window.location.href = url;
+    } catch (e) {
+      setAuthorizing(false);
+      toast.error(e instanceof Error ? e.message : "Couldn't start the Pinterest connection");
     }
-    await new Promise((r) => setTimeout(r, 1400));
-    popup?.close();
-
-    const { error } = await supabase
-      .from("profiles")
-      .update({ pinterest_connected: true, source_platform: "pinterest" })
-      .eq("id", userId);
-    setAuthorizing(false);
-    if (error) return toast.error(error.message);
-    toast.success("Pinterest connected");
-    setPhase("sync");
-    // auto-start sync
-    setTimeout(() => startSync(), 300);
   }
 
   async function startSync() {
@@ -135,10 +115,7 @@ function OnboardingPage() {
 
   async function finishOnboarding() {
     if (!userId) return;
-    await supabase
-      .from("profiles")
-      .update({ onboarding_completed: true })
-      .eq("id", userId);
+    await supabase.from("profiles").update({ onboarding_completed: true }).eq("id", userId);
     setSyncOpen(false);
     setPhase("done");
     // Show the syncing loader for a moment before entering the dashboard
@@ -146,7 +123,6 @@ function OnboardingPage() {
     toast.success("You're all set");
     navigate({ to: "/dashboard" });
   }
-
 
   if (phase === "done") {
     return (
@@ -191,9 +167,7 @@ function OnboardingPage() {
             <PinterestIcon className="h-9 w-9" />
           </div>
         </div>
-        <h2 className="font-display text-2xl font-semibold">
-          Syncing your Pinterest…
-        </h2>
+        <h2 className="font-display text-2xl font-semibold">Syncing your Pinterest…</h2>
         <p className="mt-2 max-w-xs text-sm text-muted-foreground">
           Importing your boards & pins and building your storefront. Hang tight.
         </p>
@@ -244,9 +218,7 @@ function OnboardingPage() {
       <div className="mx-auto w-full max-w-md px-4 pt-8 sm:max-w-lg">
         <div className="mb-6 flex items-center gap-2">
           <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-primary shadow-glow">
-            <span className="font-display text-sm font-bold text-primary-foreground">
-              P
-            </span>
+            <span className="font-display text-sm font-bold text-primary-foreground">P</span>
           </div>
           <span className="font-display text-lg font-semibold">Pinearn</span>
           <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary">
@@ -291,94 +263,91 @@ function OnboardingPage() {
             </form>
           </div>
         ) : (
-        <div className="rounded-2xl border border-border bg-surface/85 p-6 shadow-elevate backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-glow">
-              <PinterestIcon className="h-5 w-5" />
+          <div className="rounded-2xl border border-border bg-surface/85 p-6 shadow-elevate backdrop-blur-xl">
+            <div className="flex items-center gap-3">
+              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-glow">
+                <PinterestIcon className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="font-display text-xl font-semibold leading-tight">
+                  Connect Pinterest to continue
+                </h1>
+                <p className="text-xs text-muted-foreground">
+                  Pinearn only works when your Pinterest is linked & synced.
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="font-display text-xl font-semibold leading-tight">
-                Connect Pinterest to continue
-              </h1>
-              <p className="text-xs text-muted-foreground">
-                Pinearn only works when your Pinterest is linked & synced.
-              </p>
-            </div>
-          </div>
 
-          <ul className="mt-5 space-y-2.5 text-sm">
-            <li className="flex items-start gap-2.5">
-              <ShieldCheck className="mt-0.5 h-4 w-4 text-accent" />
-              <span className="text-muted-foreground">
-                Secure OAuth — we never see your password.
-              </span>
-            </li>
-            <li className="flex items-start gap-2.5">
-              <Layers className="mt-0.5 h-4 w-4 text-accent" />
-              <span className="text-muted-foreground">
-                All your <span className="text-foreground font-medium">boards</span> become collections in your store.
-              </span>
-            </li>
-            <li className="flex items-start gap-2.5">
-              <ImageIcon className="mt-0.5 h-4 w-4 text-accent" />
-              <span className="text-muted-foreground">
-                Every <span className="text-foreground font-medium">pin</span> is imported with title, image & link.
-              </span>
-            </li>
-            <li className="flex items-start gap-2.5">
-              <Sparkles className="mt-0.5 h-4 w-4 text-accent" />
-              <span className="text-muted-foreground">
-                Attribute clicks & earnings back to each pin automatically.
-              </span>
-            </li>
-          </ul>
+            <ul className="mt-5 space-y-2.5 text-sm">
+              <li className="flex items-start gap-2.5">
+                <ShieldCheck className="mt-0.5 h-4 w-4 text-accent" />
+                <span className="text-muted-foreground">
+                  Secure OAuth — we never see your password.
+                </span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <Layers className="mt-0.5 h-4 w-4 text-accent" />
+                <span className="text-muted-foreground">
+                  All your <span className="text-foreground font-medium">boards</span> become
+                  collections in your store.
+                </span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <ImageIcon className="mt-0.5 h-4 w-4 text-accent" />
+                <span className="text-muted-foreground">
+                  Every <span className="text-foreground font-medium">pin</span> is imported with
+                  title, image & link.
+                </span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <Sparkles className="mt-0.5 h-4 w-4 text-accent" />
+                <span className="text-muted-foreground">
+                  Attribute clicks & earnings back to each pin automatically.
+                </span>
+              </li>
+            </ul>
 
-          <button
-            onClick={authorizePinterest}
-            disabled={authorizing || phase !== "authorize"}
-            className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-95 disabled:opacity-60"
-          >
-            {authorizing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : phase !== "authorize" ? (
-              <CheckCircle2 className="h-4 w-4" />
-            ) : (
-              <PinterestIcon />
-            )}
-            {phase === "authorize"
-              ? authorizing
-                ? "Opening Pinterest…"
-                : "Continue with Pinterest"
-              : "Pinterest connected"}
-            {phase === "authorize" && !authorizing && (
-              <ArrowRight className="h-4 w-4" />
-            )}
-          </button>
-
-          {phase !== "authorize" && (
             <button
-              onClick={startSync}
-              disabled={syncStatus === "running"}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface px-4 py-2.5 text-sm font-medium transition hover:bg-surface-2 disabled:opacity-60"
+              onClick={authorizePinterest}
+              disabled={authorizing || phase !== "authorize"}
+              className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-95 disabled:opacity-60"
             >
-              {syncStatus === "running" ? (
+              {authorizing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
+              ) : phase !== "authorize" ? (
+                <CheckCircle2 className="h-4 w-4" />
               ) : (
-                <Layers className="h-4 w-4" />
+                <PinterestIcon />
               )}
-              {syncStatus === "success"
-                ? "Re-sync boards & pins"
-                : "Sync boards & pins"}
+              {phase === "authorize"
+                ? authorizing
+                  ? "Opening Pinterest…"
+                  : "Continue with Pinterest"
+                : "Pinterest connected"}
+              {phase === "authorize" && !authorizing && <ArrowRight className="h-4 w-4" />}
             </button>
-          )}
 
-          <p className="mt-4 text-center text-[11px] text-muted-foreground">
-            You can't skip this step — Pinearn needs Pinterest data to build your storefront.
-          </p>
-        </div>
+            {phase !== "authorize" && (
+              <button
+                onClick={startSync}
+                disabled={syncStatus === "running"}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface px-4 py-2.5 text-sm font-medium transition hover:bg-surface-2 disabled:opacity-60"
+              >
+                {syncStatus === "running" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Layers className="h-4 w-4" />
+                )}
+                {syncStatus === "success" ? "Re-sync boards & pins" : "Sync boards & pins"}
+              </button>
+            )}
+
+            <p className="mt-4 text-center text-[11px] text-muted-foreground">
+              You can't skip this step — Pinearn needs Pinterest data to build your storefront.
+            </p>
+          </div>
         )}
       </div>
-
 
       <PinterestSyncModal
         open={syncOpen}

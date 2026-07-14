@@ -168,6 +168,7 @@ export type Database = {
           id: string
           image_url: string | null
           impressions: number
+          pinterest_pin_id: string | null
           product_id: string | null
           source: string | null
           status: string
@@ -187,6 +188,7 @@ export type Database = {
           id?: string
           image_url?: string | null
           impressions?: number
+          pinterest_pin_id?: string | null
           product_id?: string | null
           source?: string | null
           status?: string
@@ -206,6 +208,7 @@ export type Database = {
           id?: string
           image_url?: string | null
           impressions?: number
+          pinterest_pin_id?: string | null
           product_id?: string | null
           source?: string | null
           status?: string
@@ -237,6 +240,42 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      pinterest_connections: {
+        Row: {
+          access_token: string
+          created_at: string
+          pinterest_user_id: string | null
+          refresh_token: string | null
+          scopes: string | null
+          token_expires_at: string | null
+          updated_at: string
+          user_id: string
+          username: string | null
+        }
+        Insert: {
+          access_token: string
+          created_at?: string
+          pinterest_user_id?: string | null
+          refresh_token?: string | null
+          scopes?: string | null
+          token_expires_at?: string | null
+          updated_at?: string
+          user_id: string
+          username?: string | null
+        }
+        Update: {
+          access_token?: string
+          created_at?: string
+          pinterest_user_id?: string | null
+          refresh_token?: string | null
+          scopes?: string | null
+          token_expires_at?: string | null
+          updated_at?: string
+          user_id?: string
+          username?: string | null
+        }
+        Relationships: []
       }
       profiles: {
         Row: {

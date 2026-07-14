@@ -1,18 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Loader2, Save, User as UserIcon, ImagePlus } from "lucide-react";
+import { Loader2, Save, User as UserIcon, ImagePlus, Link2 } from "lucide-react";
+import { startPinterestOAuth } from "@/lib/pinterest-oauth.functions";
 
 export const Route = createFileRoute("/_authenticated/profile")({
   component: ProfilePage,
 });
 
 function ProfilePage() {
+  const runStartOAuth = useServerFn(startPinterestOAuth);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState<string>("");
   const [displayName, setDisplayName] = useState("");
@@ -30,7 +34,9 @@ function ProfilePage() {
   const { data: storefrontCount } = useQuery({
     queryKey: ["sf-count"],
     queryFn: async () => {
-      const { count } = await supabase.from("storefronts").select("*", { count: "exact", head: true });
+      const { count } = await supabase
+        .from("storefronts")
+        .select("*", { count: "exact", head: true });
       return count ?? 0;
     },
   });
@@ -54,6 +60,10 @@ function ProfilePage() {
       }
       setLoading(false);
     })();
+    if (new URLSearchParams(window.location.search).get("connected") === "1") {
+      toast.success("Pinterest connected");
+      window.history.replaceState(null, "", window.location.pathname);
+    }
   }, []);
 
   async function save() {
@@ -64,13 +74,23 @@ function ProfilePage() {
       .from("profiles")
       .update({
         display_name: displayName.trim(),
-        pinterest_username: pinterestUsername.trim() || null,
         avatar_url: avatarUrl.trim() || null,
       })
       .eq("id", userId);
     setSaving(false);
     if (error) return toast.error(error.message);
     toast.success("Profile updated");
+  }
+
+  async function connectPinterest() {
+    setConnecting(true);
+    try {
+      const { url } = await runStartOAuth({ data: { returnTo: "/profile" } });
+      window.location.href = url;
+    } catch (e) {
+      setConnecting(false);
+      toast.error(e instanceof Error ? e.message : "Couldn't start the Pinterest connection");
+    }
   }
 
   const initials = (displayName || email || "?")
@@ -100,9 +120,7 @@ function ProfilePage() {
               <p className="truncate text-xs text-muted-foreground">{email}</p>
               <span
                 className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                  connected
-                    ? "bg-accent/15 text-accent"
-                    : "bg-muted text-muted-foreground"
+                  connected ? "bg-accent/15 text-accent" : "bg-muted text-muted-foreground"
                 }`}
               >
                 {connected ? "Pinterest connected" : "Pinterest not connected"}
@@ -124,14 +142,26 @@ function ProfilePage() {
                   placeholder="Your name"
                 />
               </Field>
-              <Field label="Pinterest username" icon={UserIcon}>
-                <input
-                  value={pinterestUsername}
-                  onChange={(e) => setPinterestUsername(e.target.value.replace(/^@/, ""))}
-                  className="w-full bg-transparent py-2 text-sm outline-none"
-                  placeholder="your-handle"
-                />
-              </Field>
+              {connected ? (
+                <Field label="Pinterest username" icon={UserIcon}>
+                  <span className="w-full py-2 text-sm text-muted-foreground">
+                    @{pinterestUsername || "connected"}
+                  </span>
+                </Field>
+              ) : (
+                <button
+                  onClick={connectPinterest}
+                  disabled={connecting}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary transition hover:bg-primary/10 disabled:opacity-60"
+                >
+                  {connecting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Link2 className="h-4 w-4" />
+                  )}
+                  Connect Pinterest
+                </button>
+              )}
               <Field label="Avatar URL" icon={ImagePlus}>
                 <input
                   value={avatarUrl}
@@ -146,7 +176,11 @@ function ProfilePage() {
                 disabled={saving}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition disabled:opacity-60"
               >
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
                 Save changes
               </button>
             </div>
@@ -199,7 +233,9 @@ function Field({
 
 function Card({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={`rounded-2xl border border-border bg-surface p-5 ${className ?? ""}`}>{children}</div>
+    <div className={`rounded-2xl border border-border bg-surface p-5 ${className ?? ""}`}>
+      {children}
+    </div>
   );
 }
 
