@@ -20,7 +20,7 @@ import { startPinterestOAuth } from "@/lib/pinterest-oauth.functions";
 import { PinterestSyncModal, type SyncStatus } from "@/components/pinterest-sync-modal";
 
 const searchSchema = z.object({
-  connected: z.string().optional(),
+  connected: z.coerce.string().optional(),
 });
 
 export const Route = createFileRoute("/_authenticated/onboarding")({

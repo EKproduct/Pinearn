@@ -22,10 +22,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { visualSearchPin } from "@/lib/pinterest.functions";
-import { pickPlaceholderImage } from "@/lib/placeholder-image";
+import { SuggestionCard } from "@/components/suggestion-card";
+
+type PinsSearch = { new?: 1; filter?: "drafts" };
 
 export const Route = createFileRoute("/_authenticated/pins")({
-  validateSearch: (s: Record<string, unknown>) => ({
+  validateSearch: (s: Record<string, unknown>): PinsSearch => ({
     new: s.new === 1 || s.new === "1" ? 1 : undefined,
     filter: s.filter === "drafts" ? "drafts" : undefined,
   }),
@@ -88,7 +90,6 @@ function PinsPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
   const [collectionFilter, setCollectionFilter] = useState<string>("live");
-  const [sortBy, setSortBy] = useState<"newest" | "clicks" | "ctr" | "earnings">("newest");
   const [openPinId, setOpenPinId] = useState<string | null>(null);
 
   // Sync the "Drafts" filter chip from ?filter=drafts (e.g. after clicking Save draft).
@@ -168,23 +169,10 @@ function PinsPage() {
       collectionFilter === "drafts"
         ? visiblePins.filter((p) => p.status === "draft")
         : visiblePins.filter((p) => p.status === "live");
-    return [...base].sort((a, b) => {
-      switch (sortBy) {
-        case "clicks":
-          return b.clicks - a.clicks;
-        case "earnings":
-          return b.earnings_cents - a.earnings_cents;
-        case "ctr": {
-          const ctrA = a.impressions > 0 ? a.clicks / a.impressions : 0;
-          const ctrB = b.impressions > 0 ? b.clicks / b.impressions : 0;
-          return ctrB - ctrA;
-        }
-        case "newest":
-        default:
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      }
-    });
-  }, [visiblePins, collectionFilter, sortBy]);
+    return [...base].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }, [visiblePins, collectionFilter]);
 
   const openPin = pins.find((p) => p.id === openPinId) ?? null;
 
@@ -231,18 +219,6 @@ function PinsPage() {
             count={draftsCount}
           />
         )}
-        <div className="ml-auto flex items-center">
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-            className="h-8 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground focus:border-primary focus:outline-none"
-          >
-            <option value="newest">Newest</option>
-            <option value="clicks">Most clicks</option>
-            <option value="ctr">Highest CTR</option>
-            <option value="earnings">Highest earnings</option>
-          </select>
-        </div>
       </div>
 
 
@@ -312,9 +288,21 @@ function PinsPage() {
                         e.stopPropagation();
                         setOpenPinId(p.id);
                       }}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-full bg-surface-2 px-2 py-2 text-xs font-semibold text-foreground hover:bg-surface-2/70"
+                      className={
+                        p.status === "draft"
+                          ? "inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-primary px-2 py-2 text-xs font-semibold text-primary-foreground shadow-glow"
+                          : "inline-flex items-center justify-center gap-1.5 rounded-full bg-surface-2 px-2 py-2 text-xs font-semibold text-foreground hover:bg-surface-2/70"
+                      }
                     >
-                      <Pencil className="h-3.5 w-3.5" /> Edit
+                      {p.status === "draft" ? (
+                        <>
+                          <Link2 className="h-3.5 w-3.5" /> Attach product
+                        </>
+                      ) : (
+                        <>
+                          <Pencil className="h-3.5 w-3.5" /> Edit
+                        </>
+                      )}
                     </button>
                     <button
                       onClick={(e) => {
@@ -446,9 +434,6 @@ export function PinDetailDialog({
       return next;
     });
 
-  const aiLinkFor = (s: { query: string }) =>
-    `https://www.amazon.in/s?k=${encodeURIComponent(s.query)}`;
-
   const resolveExternal = () => {
     if (manualUrl.trim()) return manualUrl.trim();
     const firstProductId = Array.from(checked)[0];
@@ -458,7 +443,7 @@ export function PinDetailDialog({
     if (firstProduct?.affiliate_url) return firstProduct.affiliate_url;
     const firstAI = Array.from(checkedAI)[0];
     if (firstAI !== undefined && suggestions[firstAI]) {
-      return aiLinkFor(suggestions[firstAI]);
+      return suggestions[firstAI].link;
     }
     return pin.external_url ?? null;
   };
@@ -472,7 +457,13 @@ export function PinDetailDialog({
     const aiPicks = Array.from(checkedAI)
       .map((i) => suggestions[i])
       .filter(Boolean)
-      .map((s) => ({ title: s.title, url: aiLinkFor(s), reason: s.reason }));
+      .map((s) => ({
+        title: s.title,
+        url: s.link,
+        image: s.thumbnail,
+        source: s.source,
+        price: s.price,
+      }));
     try {
       sessionStorage.setItem(
         `pin-preview:${pin.id}`,
@@ -489,10 +480,19 @@ export function PinDetailDialog({
     mutationFn: async () => {
       const firstProductId = Array.from(checked)[0] ?? null;
       const external = resolveExternal();
+      // "draft" means genuinely left midway — some product/link was picked
+      // but Go Live was never hit. A pin nobody has touched yet (fresh from
+      // Pinterest sync, nothing checked here) stays "new", not "draft".
+      const hasSelection = checked.size > 0 || checkedAI.size > 0 || manualUrl.trim() !== "";
+      // Closing/cancelling here is never the "Go Live" action — a pin only
+      // goes live from the preview page's explicit Go Live button. Leaving
+      // this dialog midway must never promote a pin to live; it also must
+      // not silently unpublish a pin that's already live from a prior
+      // Go Live click.
       const { error } = await supabase
         .from("pins")
         .update({
-          status: firstProductId || external ? "live" : "draft",
+          status: pin.status === "live" ? "live" : hasSelection ? "draft" : "new",
           product_id: firstProductId,
           external_url: external ?? null,
         })
@@ -714,48 +714,18 @@ export function PinDetailDialog({
                 No suggestions yet.
               </p>
             ) : (
-              suggestions.map((s, idx) => {
-                const isChecked = checkedAI.has(idx);
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => toggleAI(idx)}
-                    className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate ${
-                      isChecked
-                        ? "border-primary ring-2 ring-primary"
-                        : "border-primary/30 hover:border-primary/60"
-                    }`}
-                  >
-                    <div
-                      className="relative aspect-square w-full cursor-pointer overflow-hidden bg-primary/10"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        window.open(aiLinkFor(s), "_blank", "noopener,noreferrer");
-                      }}
-                    >
-                      <img
-                        src={pickPlaceholderImage(s.query)}
-                        alt={s.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                      />
-                    </div>
-                    {isChecked && (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                        <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                      </span>
-                    )}
-                    <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                      <div className="min-w-0">
-                        <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                          {s.title}
-                        </h3>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
+              suggestions.map((s, idx) => (
+                <SuggestionCard
+                  key={idx}
+                  title={s.title}
+                  thumbnail={s.thumbnail}
+                  source={s.source}
+                  link={s.link}
+                  price={s.price}
+                  selected={checkedAI.has(idx)}
+                  onToggle={() => toggleAI(idx)}
+                />
+              ))
             )}
           </div>
 

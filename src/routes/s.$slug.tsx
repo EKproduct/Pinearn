@@ -29,8 +29,9 @@ export const getPublicStorefront = createServerFn({ method: "GET" })
           .order("position", { ascending: true }),
         sb
           .from("pins")
-          .select("id,title,image_url,collection_id")
+          .select("id,title,image_url,collection_id,product_id")
           .eq("storefront_id", store.id)
+          .eq("status", "live")
           .order("created_at", { ascending: false })
           .limit(200),
         sb
@@ -92,13 +93,19 @@ export const Route = createFileRoute("/s/$slug")({
 });
 
 function PublicStorefront() {
-  const { store, collections, pins, boards, boardCollections, profile } = Route.useLoaderData();
-  type C = (typeof collections)[number];
+  const { store, collections: allCollections, pins, boards, boardCollections, profile } = Route.useLoaderData();
+  type C = (typeof allCollections)[number];
   type P = (typeof pins)[number];
   type B = (typeof boards)[number];
   const brand = store.brand_color ?? "#E60023";
   const backgroundUrl = store.background_image_url ?? DEFAULT_BACKGROUND;
   const [tab, setTab] = useState<"collections" | "boards">("collections");
+
+  // `pins` only contains live pins (see the loader) — a pin only goes live
+  // via the explicit Go Live action, so a collection (synced Pinterest
+  // board) only shows up publicly once it has at least one live pin.
+  const collectionIdsWithProduct = new Set(pins.map((p) => p.collection_id));
+  const collections = allCollections.filter((c) => collectionIdsWithProduct.has(c.id));
 
   const collectionsByBoard = new Map<string, string[]>();
   for (const bc of boardCollections) {
@@ -209,7 +216,7 @@ function PublicStorefront() {
                 <CoverCard
                   key={b.id}
                   name={b.name}
-                  subtitle={`${memberIds.length} collection${memberIds.length === 1 ? "" : "s"}`}
+                  subtitle={`${memberCollections.length} collection${memberCollections.length === 1 ? "" : "s"}`}
                   coverUrl={cover}
                   coverColor={null}
                   brand={brand}

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
 import { ProductCard } from "@/components/product-card";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import { useMemo } from "react";
 import {
@@ -9,7 +10,8 @@ import {
   Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
-import { pickPlaceholderImage } from "@/lib/placeholder-image";
+import { SuggestionCard, type SuggestionPrice } from "@/components/suggestion-card";
+import { goLivePin } from "@/lib/pinterest.functions";
 
 
 export const Route = createFileRoute("/_authenticated/pins_/preview")({
@@ -27,7 +29,6 @@ type Pin = {
   storefront_id: string | null;
   collection_id: string | null;
 };
-type Collection = { id: string; name: string; slug: string; storefront_id: string };
 type Storefront = { id: string; name: string; slug: string };
 type Product = {
   id: string;
@@ -40,20 +41,13 @@ type Product = {
   storefront_id: string;
   collection_id: string | null;
 };
-type AIPick = { title: string; url: string; reason?: string };
-
-function slugify(name: string) {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
+type AIPick = { title: string; url: string; image: string | null; source: string; price: SuggestionPrice };
 
 function PinPreviewPage() {
   const { pinId } = Route.useSearch();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const runGoLive = useServerFn(goLivePin);
 
 
 
@@ -82,20 +76,6 @@ function PinPreviewPage() {
         .eq("id", pin.storefront_id)
         .maybeSingle();
       return (data ?? null) as Storefront | null;
-    },
-    enabled: !!pin?.storefront_id,
-  });
-
-  const { data: collections = [] } = useQuery({
-    queryKey: ["collections", pin?.storefront_id],
-    queryFn: async () => {
-      if (!pin?.storefront_id) return [];
-      const { data } = await supabase
-        .from("collections")
-        .select("id,name,slug,storefront_id")
-        .eq("storefront_id", pin.storefront_id)
-        .order("position", { ascending: true });
-      return (data ?? []) as Collection[];
     },
     enabled: !!pin?.storefront_id,
   });
@@ -132,80 +112,20 @@ function PinPreviewPage() {
   const goLive = useMutation({
     mutationFn: async () => {
       if (!pin || !storefront) throw new Error("Pin not ready");
-      const { data: userRes } = await supabase.auth.getUser();
-      const userId = userRes.user?.id;
-      if (!userId) throw new Error("Not signed in");
-
-      // Always create a fresh collection for this pin's products.
-      const name = (pin.title?.trim() || "Pin collection").slice(0, 60);
-      const slug = `${slugify(name) || "collection"}-${Math.random().toString(36).slice(2, 6)}`;
-      const { data: created, error: cErr } = await supabase
-        .from("collections")
-        .insert({
-          user_id: userId,
-          storefront_id: storefront.id,
-          name,
-          slug,
-          source: "manual",
-          position: collections.length,
-        })
-        .select("id,slug")
-        .single();
-      if (cErr) throw cErr;
-      const collectionId = created.id as string;
-      const collectionSlug = created.slug as string;
-
-      // Insert AI picks as products in this collection (skip duplicates by URL).
-      if (stash.aiPicks.length > 0) {
-        const urls = stash.aiPicks.map((a) => a.url);
-        const { data: existingRows } = await supabase
-          .from("storefront_products")
-          .select("affiliate_url")
-          .eq("storefront_id", storefront.id)
-          .in("affiliate_url", urls);
-        const existing = new Set((existingRows ?? []).map((r) => r.affiliate_url));
-        const toInsert = stash.aiPicks
-          .filter((a) => !existing.has(a.url))
-          .map((a) => ({
-            user_id: userId,
-            storefront_id: storefront.id,
-            collection_id: collectionId,
+      // Real Go Live path, shared with board-level bulk monetization — see
+      // performGoLive() in pinterest.functions.ts.
+      return runGoLive({
+        data: {
+          pinId: pin.id,
+          origin: window.location.origin,
+          existingProductIds: stash.productIds,
+          newProducts: stash.aiPicks.map((a) => ({
             title: a.title,
-            affiliate_url: a.url,
-            image_url: pin.image_url,
-          }));
-        if (toInsert.length > 0) {
-          const { error: aiErr } = await supabase.from("storefront_products").insert(toInsert);
-          if (aiErr) throw aiErr;
-        }
-      }
-
-      // Move selected existing products into this collection.
-      if (stash.productIds.length > 0) {
-        const { error: mvErr } = await supabase
-          .from("storefront_products")
-          .update({ collection_id: collectionId })
-          .in("id", stash.productIds);
-        if (mvErr) throw mvErr;
-      }
-
-      // Build the public storefront collection URL for the creator's Pinterest external link.
-      const origin = typeof window !== "undefined" ? window.location.origin : "";
-      const externalUrl = `${origin}/s/${storefront.slug}#${collectionSlug}`;
-
-      const firstProductId = stash.productIds[0] ?? null;
-      const { error: pinErr } = await supabase
-        .from("pins")
-        .update({
-          status: "live",
-          collection_id: collectionId,
-          product_id: firstProductId,
-          external_url: externalUrl,
-        })
-        .eq("id", pin.id);
-      if (pinErr) throw pinErr;
-
-      return { externalUrl };
+            affiliateUrl: a.url,
+            imageUrl: a.image,
+          })),
+        },
+      });
     },
     onSuccess: ({ externalUrl }) => {
       qc.invalidateQueries({ queryKey: ["pins"] });
@@ -304,29 +224,14 @@ function PinPreviewPage() {
                   <ProductCard key={p.id} product={p} brand={storefront?.name} />
                 ))}
                 {stash.aiPicks.map((a, i) => (
-                  <div
+                  <SuggestionCard
                     key={`ai-${i}`}
-                    className="group flex h-full flex-col overflow-hidden rounded-xl border border-primary/40 bg-surface transition hover:-translate-y-0.5 hover:shadow-elevate"
-                  >
-                    <div
-                      className="relative aspect-square w-full cursor-pointer overflow-hidden bg-primary/10"
-                      onClick={() => window.open(a.url, "_blank", "noopener,noreferrer")}
-                    >
-                      <img
-                        src={pickPlaceholderImage(a.title)}
-                        alt={a.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                      />
-                    </div>
-                    <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                      <div>
-                        <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug">
-                          {a.title}
-                        </h3>
-                      </div>
-                    </div>
-                  </div>
+                    title={a.title}
+                    thumbnail={a.image}
+                    source={a.source}
+                    link={a.url}
+                    price={a.price}
+                  />
                 ))}
                 {selectedProducts.length + stash.aiPicks.length === 0 && (
                   <p className="col-span-full rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
@@ -346,10 +251,15 @@ function PinPreviewPage() {
           className="fixed inset-x-0 bottom-0 z-50 border-t border-border/60 bg-surface/95 px-3 pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.12)] backdrop-blur"
           style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
         >
+          {selectedProducts.length + stash.aiPicks.length === 0 && (
+            <p className="mx-auto max-w-2xl pb-1.5 text-center text-[11px] text-muted-foreground">
+              Attach at least one product to go live.
+            </p>
+          )}
           <div className="mx-auto flex max-w-2xl">
             <button
               onClick={() => goLive.mutate()}
-              disabled={goLive.isPending}
+              disabled={goLive.isPending || selectedProducts.length + stash.aiPicks.length === 0}
               className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-primary px-3 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition disabled:opacity-50"
             >
               {goLive.isPending ? (

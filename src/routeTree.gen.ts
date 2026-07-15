@@ -25,6 +25,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedBrandsRouteImport } from './routes/_authenticated/brands'
 import { Route as AuthenticatedAnalyticsRouteImport } from './routes/_authenticated/analytics'
 import { Route as AuthenticatedPinsPreviewRouteImport } from './routes/_authenticated/pins_.preview'
+import { Route as AuthenticatedPinsMonetizeBoardRouteImport } from './routes/_authenticated/pins_.monetize-board'
 import { Route as AuthenticatedPinsCreateRouteImport } from './routes/_authenticated/pins_.create'
 import { Route as AuthenticatedPinsAttachRouteImport } from './routes/_authenticated/pins_.attach'
 import { Route as AuthenticatedBrandsBrandIdRouteImport } from './routes/_authenticated/brands_.$brandId'
@@ -111,6 +112,12 @@ const AuthenticatedPinsPreviewRoute =
     path: '/pins/preview',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedPinsMonetizeBoardRoute =
+  AuthenticatedPinsMonetizeBoardRouteImport.update({
+    id: '/pins_/monetize-board',
+    path: '/pins/monetize-board',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedPinsCreateRoute = AuthenticatedPinsCreateRouteImport.update({
   id: '/pins_/create',
   path: '/pins/create',
@@ -152,6 +159,7 @@ export interface FileRoutesByFullPath {
   '/brands/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/pins/attach': typeof AuthenticatedPinsAttachRoute
   '/pins/create': typeof AuthenticatedPinsCreateRoute
+  '/pins/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/pins/preview': typeof AuthenticatedPinsPreviewRoute
   '/collections/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -173,6 +181,7 @@ export interface FileRoutesByTo {
   '/brands/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/pins/attach': typeof AuthenticatedPinsAttachRoute
   '/pins/create': typeof AuthenticatedPinsCreateRoute
+  '/pins/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/pins/preview': typeof AuthenticatedPinsPreviewRoute
   '/collections/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -196,6 +205,7 @@ export interface FileRoutesById {
   '/_authenticated/brands_/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/_authenticated/pins_/attach': typeof AuthenticatedPinsAttachRoute
   '/_authenticated/pins_/create': typeof AuthenticatedPinsCreateRoute
+  '/_authenticated/pins_/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/_authenticated/pins_/preview': typeof AuthenticatedPinsPreviewRoute
   '/_authenticated/collections_/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -219,6 +229,7 @@ export interface FileRouteTypes {
     | '/brands/$brandId'
     | '/pins/attach'
     | '/pins/create'
+    | '/pins/monetize-board'
     | '/pins/preview'
     | '/collections/$id/attach'
   fileRoutesByTo: FileRoutesByTo
@@ -240,6 +251,7 @@ export interface FileRouteTypes {
     | '/brands/$brandId'
     | '/pins/attach'
     | '/pins/create'
+    | '/pins/monetize-board'
     | '/pins/preview'
     | '/collections/$id/attach'
   id:
@@ -262,6 +274,7 @@ export interface FileRouteTypes {
     | '/_authenticated/brands_/$brandId'
     | '/_authenticated/pins_/attach'
     | '/_authenticated/pins_/create'
+    | '/_authenticated/pins_/monetize-board'
     | '/_authenticated/pins_/preview'
     | '/_authenticated/collections_/$id/attach'
   fileRoutesById: FileRoutesById
@@ -389,6 +402,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPinsPreviewRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/pins_/monetize-board': {
+      id: '/_authenticated/pins_/monetize-board'
+      path: '/pins/monetize-board'
+      fullPath: '/pins/monetize-board'
+      preLoaderRoute: typeof AuthenticatedPinsMonetizeBoardRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/pins_/create': {
       id: '/_authenticated/pins_/create'
       path: '/pins/create'
@@ -433,6 +453,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedBrandsBrandIdRoute: typeof AuthenticatedBrandsBrandIdRoute
   AuthenticatedPinsAttachRoute: typeof AuthenticatedPinsAttachRoute
   AuthenticatedPinsCreateRoute: typeof AuthenticatedPinsCreateRoute
+  AuthenticatedPinsMonetizeBoardRoute: typeof AuthenticatedPinsMonetizeBoardRoute
   AuthenticatedPinsPreviewRoute: typeof AuthenticatedPinsPreviewRoute
   AuthenticatedCollectionsIdAttachRoute: typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -450,6 +471,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedBrandsBrandIdRoute: AuthenticatedBrandsBrandIdRoute,
   AuthenticatedPinsAttachRoute: AuthenticatedPinsAttachRoute,
   AuthenticatedPinsCreateRoute: AuthenticatedPinsCreateRoute,
+  AuthenticatedPinsMonetizeBoardRoute: AuthenticatedPinsMonetizeBoardRoute,
   AuthenticatedPinsPreviewRoute: AuthenticatedPinsPreviewRoute,
   AuthenticatedCollectionsIdAttachRoute: AuthenticatedCollectionsIdAttachRoute,
 }

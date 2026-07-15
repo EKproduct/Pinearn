@@ -13,7 +13,7 @@ const AUTHORIZE_URL = "https://www.pinterest.com/oauth/";
 // granted; nothing else here needs to change.
 const SCOPES = "boards:read,boards:write,pins:read,pins:write,user_accounts:read";
 
-function requireEnv(name: string): string {
+export function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Missing environment variable: ${name}`);
   return value;
@@ -291,9 +291,6 @@ export async function listBoardPins(accessToken: string, boardId: string): Promi
 export type PinterestAccount = {
   username: string | null;
   accountId: string | null;
-  businessName: string | null;
-  profileImage: string | null;
-  accountType: string | null;
   pinCount: number;
   boardCount: number;
   followerCount: number;
@@ -306,9 +303,6 @@ export async function getUserAccount(accessToken: string): Promise<PinterestAcco
   return {
     username: data.username ?? null,
     accountId: data.id ?? null,
-    businessName: data.business_name ?? null,
-    profileImage: data.profile_image ?? null,
-    accountType: data.account_type ?? null,
     pinCount: Number(data.pin_count ?? 0),
     boardCount: Number(data.board_count ?? 0),
     followerCount: Number(data.follower_count ?? 0),
@@ -366,7 +360,7 @@ export async function getTopPinsAnalytics(
   });
   const data = await pinterestFetch(accessToken, `/user_account/analytics/top_pins?${qs.toString()}`);
   const items = (data?.pins ?? []) as Array<{ pin_id: string; metrics: Record<string, number> }>;
-  return items.slice(0, range.limit ?? 25).map((p) => ({ pinId: p.pin_id, ...toAnalyticsMetrics(p.metrics) }));
+  return items.slice(0, range.limit ?? 500).map((p) => ({ pinId: p.pin_id, ...toAnalyticsMetrics(p.metrics) }));
 }
 
 export async function createPin(
@@ -396,24 +390,21 @@ export async function createPin(
 export async function getPinAnalytics(
   accessToken: string,
   pinId: string,
-): Promise<{ impressions: number; clicks: number }> {
-  const end = new Date();
-  const start = new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000);
+  range?: { startDate: Date; endDate: Date },
+): Promise<PinterestAccountAnalytics> {
+  const endDate = range?.endDate ?? new Date();
+  const startDate = range?.startDate ?? new Date(endDate.getTime() - 90 * 24 * 60 * 60 * 1000);
   const qs = new URLSearchParams({
-    start_date: start.toISOString().slice(0, 10),
-    end_date: end.toISOString().slice(0, 10),
-    metric_types: "IMPRESSION,PIN_CLICK",
+    start_date: startDate.toISOString().slice(0, 10),
+    end_date: endDate.toISOString().slice(0, 10),
+    metric_types: ANALYTICS_METRIC_TYPES,
   });
   try {
     const data = await pinterestFetch(accessToken, `/pins/${pinId}/analytics?${qs.toString()}`);
-    const summary = data?.all?.summary_metrics ?? data?.summary_metrics ?? {};
-    return {
-      impressions: Number(summary.IMPRESSION ?? 0),
-      clicks: Number(summary.PIN_CLICK ?? 0),
-    };
+    return toAnalyticsMetrics(data?.all?.summary_metrics ?? data?.summary_metrics);
   } catch {
     // Analytics can lag behind a freshly-created Pin, or be unavailable in
     // Sandbox — don't fail the whole sync over one Pin's metrics.
-    return { impressions: 0, clicks: 0 };
+    return { impressions: 0, pinClicks: 0, outboundClicks: 0, saves: 0, engagement: 0 };
   }
 }

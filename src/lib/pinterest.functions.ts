@@ -9,8 +9,13 @@ import {
   getUserAccount,
   listBoardPins,
   listBoards,
+  requireEnv,
 } from "@/lib/pinterest-api";
 import { getValidPinterestToken } from "@/lib/pinterest-oauth.functions";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // -------------------------------------------------------------
 // Helpers
@@ -146,9 +151,10 @@ export const importPinterestBoards = createServerFn({ method: "POST" })
           image_url: p.imageUrl,
           external_url: p.link,
           source: "pinterest",
-          // No product attached yet at import time — stays a draft until the
-          // user attaches one, matching the manual create-pin flow's rule.
-          status: "draft",
+          // "new" = untouched, fresh from Pinterest sync. "draft" is reserved
+          // for pins where the user actually started attaching a product and
+          // left it unfinished — see PinDetailDialog in pins.tsx.
+          status: "new",
           pinterest_pin_id: p.id,
           // Preserve the pin's real Pinterest creation time so the pins list
           // (sorted by created_at) reflects actual posting order, not sync order.
@@ -243,7 +249,17 @@ export const createPinterestPin = createServerFn({ method: "POST" })
 
 // -------------------------------------------------------------
 // Refresh real impressions/clicks for already-published pins.
+//
+// Pinterest's per-pin analytics endpoint is rate-limited hard (confirmed: a
+// burst of ~40 concurrent requests immediately gets 429 "You have exceeded
+// your rate limit"). So this runs fully sequential with a pause between
+// calls and a single retry-with-backoff on 429, and only processes a bounded
+// batch per invocation (oldest-synced pins first) — call it again to work
+// through the rest instead of trying to do all pins in one shot.
 // -------------------------------------------------------------
+
+const SYNC_BATCH_SIZE = 40;
+const SYNC_DELAY_MS = 350;
 
 export const syncPinterestAnalytics = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -251,45 +267,70 @@ export const syncPinterestAnalytics = createServerFn({ method: "POST" })
     const { supabase, userId } = context;
     const accessToken = await getValidPinterestToken(userId);
 
+    const { count: totalCount } = await supabase
+      .from("pins")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .not("pinterest_pin_id", "is", null);
+
     const { data: pins, error } = await supabase
       .from("pins")
       .select("id, pinterest_pin_id")
       .eq("user_id", userId)
-      .not("pinterest_pin_id", "is", null);
+      .not("pinterest_pin_id", "is", null)
+      .order("updated_at", { ascending: true }) // least-recently-synced first
+      .limit(SYNC_BATCH_SIZE);
     if (error) throw new Error(error.message);
 
     let updated = 0;
     for (const p of pins ?? []) {
-      const stats = await getPinAnalytics(accessToken, p.pinterest_pin_id as string);
+      let stats = await getPinAnalytics(accessToken, p.pinterest_pin_id as string);
+      if (stats.impressions === 0 && stats.pinClicks === 0) {
+        // Could be a genuine zero or a swallowed 429 — a short backoff and
+        // one retry disambiguates without risking another burst.
+        await sleep(1500);
+        stats = await getPinAnalytics(accessToken, p.pinterest_pin_id as string);
+      }
       const { error: updErr } = await supabase
         .from("pins")
-        .update({ impressions: stats.impressions, clicks: stats.clicks })
+        .update({ impressions: stats.impressions, clicks: stats.pinClicks })
         .eq("id", p.id);
       if (!updErr) updated++;
+      await sleep(SYNC_DELAY_MS);
     }
 
-    return { updated };
+    return { updated, remaining: Math.max((totalCount ?? 0) - updated, 0) };
   });
 
 // -------------------------------------------------------------
-// Real Pinterest traffic analytics for the Analytics page. Everything here
-// is genuine Pinterest data (account totals + account/pin-level Impressions,
-// Pin clicks, Outbound clicks, Saves, Engagement) — there is no orders/sales/
-// commission data anywhere in Pinterest's API, so that's handled separately
-// on the client as an explicit zero state, not faked here.
+// Real Pinterest traffic analytics for the Analytics page. Every number here
+// comes straight from Pinterest (account totals + Impressions/Pin clicks/
+// Outbound clicks/Saves/Engagement) or from our own `pins`/`storefront_products`
+// tables (which products are actually attached). There is no orders/sales/
+// commission data anywhere in Pinterest's API — the Analytics page zeroes
+// that out itself rather than this endpoint faking it.
+//
+// Per-pin numbers come from our own `pins.impressions`/`pins.clicks` columns
+// (kept fresh by syncPinterestAnalytics, see above) rather than a live call
+// per pin — Pinterest's per-pin analytics endpoint rate-limits hard, so
+// fetching every pin live on every page load isn't viable. The one live call
+// here (getTopPinsAnalytics) is a single request that overlays fresher
+// numbers for whichever pins Pinterest currently considers "trending".
 // -------------------------------------------------------------
 
-const ANALYTICS_RANGES = ["7d", "30d", "90d"] as const;
-// Pinterest's analytics endpoints reject any start_date older than 90 days.
+const ANALYTICS_RANGES = ["7d", "30d", "90d", "12mo"] as const;
+// Pinterest's analytics endpoints reject any start_date older than 90 days,
+// so "12mo" just requests the max allowed window under the hood.
 const ANALYTICS_RANGE_DAYS: Record<(typeof ANALYTICS_RANGES)[number], number> = {
   "7d": 7,
   "30d": 30,
   "90d": 90,
+  "12mo": 90,
 };
 
 export const getPinterestAnalytics = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { range: "7d" | "30d" | "90d" }) =>
+  .inputValidator((d: { range: "7d" | "30d" | "90d" | "12mo" }) =>
     z.object({ range: z.enum(ANALYTICS_RANGES) }).parse(d),
   )
   .handler(async ({ data, context }) => {
@@ -299,58 +340,126 @@ export const getPinterestAnalytics = createServerFn({ method: "POST" })
     const endDate = new Date();
     const startDate = new Date(endDate.getTime() - ANALYTICS_RANGE_DAYS[data.range] * 86400000);
 
-    const [account, overview, topPins] = await Promise.all([
+    const [account, overview, topPins, { data: ourPins }] = await Promise.all([
       getUserAccount(accessToken),
       getAccountAnalytics(accessToken, { startDate, endDate }),
-      getTopPinsAnalytics(accessToken, { startDate, endDate, limit: 25 }),
+      getTopPinsAnalytics(accessToken, { startDate, endDate }),
+      supabase
+        .from("pins")
+        .select("id, title, image_url, product_id, pinterest_pin_id, impressions, clicks")
+        .eq("user_id", userId)
+        .eq("status", "live") // only live pins (real product attached, Go Live hit) belong in pin analytics
+        .not("pinterest_pin_id", "is", null),
     ]);
+    const topByPinterestId = new Map(topPins.map((p) => [p.pinId, p]));
 
-    // Join Pinterest's pin ids back to our own synced pin rows for title/image —
-    // only show pins we actually have a local record of.
-    const pinterestPinIds = topPins.map((p) => p.pinId);
-    const { data: ourPins } = pinterestPinIds.length
+    const productIds = (ourPins ?? []).map((p) => p.product_id).filter((id): id is string => !!id);
+    const { data: attachedProducts } = productIds.length
       ? await supabase
-          .from("pins")
-          .select("id, title, image_url, pinterest_pin_id")
-          .in("pinterest_pin_id", pinterestPinIds)
-      : { data: [] as { id: string; title: string; image_url: string | null; pinterest_pin_id: string | null }[] };
-    const byPinterestId = new Map((ourPins ?? []).map((p) => [p.pinterest_pin_id, p]));
+          .from("storefront_products")
+          .select("id, title, image_url, affiliate_url")
+          .in("id", productIds)
+      : { data: [] as { id: string; title: string; image_url: string | null; affiliate_url: string }[] };
+    const productById = new Map((attachedProducts ?? []).map((p) => [p.id, p]));
 
-    const pins = topPins
-      .map((tp) => {
-        const local = byPinterestId.get(tp.pinId);
-        if (!local) return null;
-        return {
-          id: local.id,
-          title: local.title,
-          imageUrl: local.image_url,
-          impressions: tp.impressions,
-          pinClicks: tp.pinClicks,
-          outboundClicks: tp.outboundClicks,
-          saves: tp.saves,
-          engagement: tp.engagement,
-        };
-      })
-      .filter((p): p is NonNullable<typeof p> => p !== null);
+    const pins = (ourPins ?? []).map((p) => {
+      // Prefer Pinterest's live "top pins" number when this pin is trending
+      // right now; otherwise fall back to our last synced snapshot.
+      const top = topByPinterestId.get(p.pinterest_pin_id as string);
+      const product = p.product_id ? (productById.get(p.product_id) ?? null) : null;
+      return {
+        id: p.id,
+        title: p.title,
+        imageUrl: p.image_url,
+        impressions: top?.impressions ?? p.impressions ?? 0,
+        clicks: top?.pinClicks ?? p.clicks ?? 0,
+        product,
+      };
+    });
 
     return { account, overview, pins };
   });
 
 // -------------------------------------------------------------
-// Visual search: given a pin image, suggest product ideas.
-// Uses Lovable AI Gateway (Gemini) when LOVABLE_API_KEY is set;
-// falls back to heuristic suggestions based on the pin title.
+// Visual search: real reverse-image product search (search-by-image API).
+// Given a pin's image, finds actual shoppable listings that visually match
+// it — real title/link/thumbnail/price from real retailers, not an LLM guess.
 // -------------------------------------------------------------
 
-const suggestionsSchema = z.object({
-  suggestions: z.array(
-    z.object({
-      title: z.string(),
-      query: z.string(),
-      reason: z.string().optional(),
-    }),
-  ),
-});
+export type VisualMatch = {
+  title: string;
+  link: string;
+  source: string;
+  thumbnail: string | null;
+  price: { value: string; extractedValue: number; currency: string } | null;
+};
+
+async function searchByImage(imageUrl: string): Promise<VisualMatch[]> {
+  const apiKey = requireEnv("VISUAL_SEARCH_API_KEY");
+  const apiUrl = process.env.VISUAL_SEARCH_API_URL || "https://ekvisualsearch.lovable.app/api/public/v1/search-by-image";
+
+  const imgRes = await fetch(imageUrl);
+  if (!imgRes.ok) {
+    throw new Error(`Couldn't fetch the pin image to search (${imgRes.status})`);
+  }
+  const imgBlob = await imgRes.blob();
+
+  const form = new FormData();
+  form.append("image", imgBlob, "pin.jpg");
+  form.append("filter", "partners");
+
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "x-api-key": apiKey },
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    // The API returns a 500 with this specific message when the reverse-image
+    // search genuinely found nothing (not a real failure) — treat it as zero
+    // matches rather than an error.
+    if (/hasn'?t returned any results/i.test(text)) return [];
+    throw new Error(`Visual search failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as {
+    visual_matches?: Array<{
+      position?: number;
+      title?: string;
+      link?: string;
+      source?: string;
+      thumbnail?: string;
+      price?: { value?: string; extracted_value?: number; currency?: string };
+    }>;
+  };
+
+  const matches = (data.visual_matches ?? [])
+    .filter((m) => m.title && m.link)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((m) => ({
+      title: m.title!,
+      link: m.link!,
+      source: m.source ?? "Store",
+      thumbnail: m.thumbnail ?? null,
+      price:
+        m.price?.value && m.price.extracted_value != null && m.price.currency
+          ? {
+              value: m.price.value,
+              extractedValue: m.price.extracted_value,
+              currency: m.price.currency,
+            }
+          : null,
+    }));
+
+  // De-duplicate by link in case the same listing shows up twice.
+  const seen = new Set<string>();
+  return matches.filter((m) => {
+    if (seen.has(m.link)) return false;
+    seen.add(m.link);
+    return true;
+  });
+}
 
 export const visualSearchPin = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -365,103 +474,18 @@ export const visualSearchPin = createServerFn({ method: "POST" })
       .maybeSingle();
     if (error) throw new Error(error.message);
     if (!pin) throw new Error("Pin not found");
-
-    const apiKey = process.env.LOVABLE_API_KEY;
-    if (!apiKey) {
-      return { suggestions: fallbackSuggestions(pin.title) };
-    }
+    if (!pin.image_url) return { suggestions: [] };
 
     try {
-      const systemPrompt = [
-        "You are a meticulous visual product-detection engine for a Pinterest affiliate creator.",
-        "Your job: examine the pin image exhaustively and enumerate EVERY distinct, buyable object you can see — foreground and background, worn and held, decor and utility.",
-        "",
-        "Detection rules — do not miss anything:",
-        "- Scan the whole frame in a grid (top-left → bottom-right). Include partially visible or small items.",
-        "- List each item separately. Do not merge (e.g. 'shirt + pants' → two entries).",
-        "- Cover these categories when present: apparel (top, bottom, outerwear, dress), footwear, headwear, bags, jewelry, watches, eyewear, hair accessories, makeup/skincare packaging, furniture, lighting, rugs, curtains, wall art, plants/planters, kitchenware, appliances, tableware, bedding, textiles, electronics, books, stationery, food/drink props, toys, tools, sports gear, vehicles/parts.",
-        "- Include distinguishing attributes in the title: color, material, pattern, style, era (e.g. 'cream cable-knit wool turtleneck sweater', 'brass arc floor lamp with marble base').",
-        "- If the same category repeats (e.g. two cushions of different colors), list each variant separately.",
-        "- Only skip an item if it is genuinely unidentifiable or not purchasable (e.g. a person, the sky).",
-        "",
-        "For each detected item output an object with:",
-        "  title  — concrete product name a shopper would recognize, with key attributes.",
-        "  query  — short Amazon-style search phrase (3–7 words) that would surface it.",
-        "  reason — 1 short sentence naming exactly WHERE in the image it appears (e.g. 'the vase on the left nightstand').",
-        "",
-        "Return JSON ONLY, no prose, matching:",
-        '{"suggestions":[{"title":"...","query":"...","reason":"..."}, ...]}',
-        "Include as many items as you truly see — do not artificially cap the list. If nothing is buyable, return an empty array.",
-      ].join("\n");
-
-      const userText = [
-        `Pin title: ${pin.title}`,
-        `Description: ${pin.description ?? ""}`,
-        "Detect every buyable item in the image. Be exhaustive.",
-      ].join("\n");
-
-      const messages: Array<{
-        role: "system" | "user";
-        content:
-          | string
-          | Array<
-              { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
-            >;
-      }> = [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userText },
-            ...(pin.image_url
-              ? ([{ type: "image_url", image_url: { url: pin.image_url } }] as const)
-              : []),
-          ],
-        },
-      ];
-
-      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          // Pro model = stronger vision + more thorough enumeration
-          model: "google/gemini-2.5-pro",
-          messages,
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-        }),
-      });
-
-      if (!res.ok) {
-        console.error("[visualSearch] gateway error", res.status, await res.text());
-        return { suggestions: fallbackSuggestions(pin.title) };
-      }
-      const body = await res.json();
-      const raw = body?.choices?.[0]?.message?.content ?? "{}";
-      const parsed = suggestionsSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
-      if (!parsed.success || parsed.data.suggestions.length === 0) {
-        return { suggestions: fallbackSuggestions(pin.title) };
-      }
-      // De-duplicate by lowercased query so the model doesn't repeat itself.
-      const seen = new Set<string>();
-      const deduped = parsed.data.suggestions.filter((s) => {
-        const key = s.query.trim().toLowerCase();
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      return { suggestions: deduped };
+      return { suggestions: await searchByImage(pin.image_url) };
     } catch (e) {
-      console.error("[visualSearch] failed", e);
-      return { suggestions: fallbackSuggestions(pin.title) };
+      console.error("[visualSearchPin] failed", e);
+      return { suggestions: [] };
     }
   });
 
-// Same AI call but takes raw image + title/description — used by the
-// Create-pin wizard where no pin row exists yet.
+// Same visual search but takes a raw image URL — used by the Create-pin
+// wizard where no pin row exists yet.
 export const visualSearchImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: { imageUrl: string; title?: string; description?: string }) =>
@@ -474,76 +498,333 @@ export const visualSearchImage = createServerFn({ method: "POST" })
       .parse(d),
   )
   .handler(async ({ data }) => {
-    const apiKey = process.env.LOVABLE_API_KEY;
-    if (!apiKey) return { suggestions: fallbackSuggestions(data.title) };
-
     try {
-      const systemPrompt = [
-        "You are a meticulous visual product-detection engine for a Pinterest affiliate creator.",
-        "Examine the image and enumerate EVERY distinct, buyable object you can see.",
-        "For each item output: title (concrete product name w/ key attributes), query (3–7 word Amazon-style search), reason (short sentence naming where it appears).",
-        'Return JSON ONLY matching: {"suggestions":[{"title":"...","query":"...","reason":"..."}, ...]}',
-      ].join("\n");
-
-      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "google/gemini-2.5-pro",
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `Pin title: ${data.title}\nDescription: ${data.description}\nDetect every buyable item.`,
-                },
-                { type: "image_url", image_url: { url: data.imageUrl } },
-              ],
-            },
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-        }),
-      });
-      if (!res.ok) return { suggestions: fallbackSuggestions(data.title) };
-      const body = await res.json();
-      const raw = body?.choices?.[0]?.message?.content ?? "{}";
-      const parsed = suggestionsSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
-      if (!parsed.success || parsed.data.suggestions.length === 0) {
-        return { suggestions: fallbackSuggestions(data.title) };
-      }
-      const seen = new Set<string>();
-      const deduped = parsed.data.suggestions.filter((s) => {
-        const k = s.query.trim().toLowerCase();
-        if (!k || seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
-      return { suggestions: deduped };
-    } catch {
-      return { suggestions: fallbackSuggestions(data.title) };
+      return { suggestions: await searchByImage(data.imageUrl) };
+    } catch (e) {
+      console.error("[visualSearchImage] failed", e);
+      return { suggestions: [] };
     }
   });
 
-function fallbackSuggestions(title: string) {
-  const t = title.toLowerCase();
-  const base = [
-    { key: "coffee", items: ["Espresso machine", "Ceramic mug set", "Burr grinder"] },
-    { key: "kitchen", items: ["Chef knife", "Cast iron skillet", "Wooden cutting board"] },
-    { key: "skincare", items: ["Vitamin C serum", "SPF 50 sunscreen", "Ceramide moisturizer"] },
-    { key: "denim", items: ["Levi's denim jacket", "Straight-leg jeans", "White sneakers"] },
-    { key: "travel", items: ["Carry-on backpack", "Packing cubes", "Travel adapter"] },
-    { key: "desk", items: ["4K monitor", "Ergonomic chair", "Desk mat"] },
-  ];
-  const match = base.find((b) => t.includes(b.key)) ?? {
-    key: "picks",
-    items: ["Best-seller pick", "Editor's choice", "Budget favorite"],
-  };
-  return match.items.map((name) => ({
-    title: name,
-    query: name,
-    reason: "Matches the pin's theme.",
-  }));
+// -------------------------------------------------------------
+// Go Live — the one real "attach product(s) and publish" mechanism. Creates
+// a fresh collection for the pin, attaches the given product(s) into it,
+// and marks the pin live with a real external_url pointing at that
+// collection on the creator's public storefront. Shared by the single-pin
+// preview flow (pins_.preview.tsx) and board-level bulk monetization below
+// — one real code path, not two divergent ones.
+// -------------------------------------------------------------
+
+async function performGoLive(
+  supabase: any,
+  userId: string,
+  origin: string,
+  pin: { id: string; title: string; image_url: string | null },
+  storefront: { id: string; slug: string },
+  position: number,
+  existingProductIds: string[],
+  newProducts: Array<{ title: string; affiliateUrl: string; imageUrl: string | null }>,
+): Promise<{ externalUrl: string; collectionId: string; productId: string | null }> {
+  if (existingProductIds.length === 0 && newProducts.length === 0) {
+    throw new Error("Attach at least one product before going live.");
+  }
+
+  const name = (pin.title?.trim() || "Pin collection").slice(0, 60);
+  const slug = `${slugify(name) || "collection"}-${Math.random().toString(36).slice(2, 6)}`;
+  const { data: created, error: cErr } = await supabase
+    .from("collections")
+    .insert({
+      user_id: userId,
+      storefront_id: storefront.id,
+      name,
+      slug,
+      source: "manual",
+      position,
+    })
+    .select("id,slug")
+    .single();
+  if (cErr) throw new Error(cErr.message);
+  const collectionId = created.id as string;
+  const collectionSlug = created.slug as string;
+
+  // Insert new (e.g. visual-search-matched) products into this collection,
+  // reusing an existing row with the same affiliate URL if one exists.
+  let newInsertedIds: string[] = [];
+  if (newProducts.length > 0) {
+    const urls = newProducts.map((p) => p.affiliateUrl);
+    const { data: existingRows } = await supabase
+      .from("storefront_products")
+      .select("id, affiliate_url")
+      .eq("storefront_id", storefront.id)
+      .in("affiliate_url", urls);
+    const existingByUrl = new Map(
+      (existingRows ?? []).map((r: any) => [r.affiliate_url as string, r.id as string]),
+    );
+    const toInsert = newProducts
+      .filter((p) => !existingByUrl.has(p.affiliateUrl))
+      .map((p) => ({
+        user_id: userId,
+        storefront_id: storefront.id,
+        collection_id: collectionId,
+        title: p.title,
+        affiliate_url: p.affiliateUrl,
+        image_url: p.imageUrl ?? pin.image_url,
+      }));
+    if (toInsert.length > 0) {
+      const { data: inserted, error: insErr } = await supabase
+        .from("storefront_products")
+        .insert(toInsert)
+        .select("id");
+      if (insErr) throw new Error(insErr.message);
+      newInsertedIds = (inserted ?? []).map((r: any) => r.id as string);
+    }
+    newInsertedIds = [...newInsertedIds, ...Array.from(existingByUrl.values() as Iterable<string>)];
+  }
+
+  // Move any explicitly-selected existing products into this collection too.
+  if (existingProductIds.length > 0) {
+    const { error: mvErr } = await supabase
+      .from("storefront_products")
+      .update({ collection_id: collectionId })
+      .in("id", existingProductIds);
+    if (mvErr) throw new Error(mvErr.message);
+  }
+
+  const externalUrl = `${origin}/s/${storefront.slug}#${collectionSlug}`;
+  const productId = existingProductIds[0] ?? newInsertedIds[0] ?? null;
+
+  const { error: pinErr } = await supabase
+    .from("pins")
+    .update({ status: "live", collection_id: collectionId, product_id: productId, external_url: externalUrl })
+    .eq("id", pin.id);
+  if (pinErr) throw new Error(pinErr.message);
+
+  return { externalUrl, collectionId, productId };
 }
+
+export const goLivePin = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    (d: {
+      pinId: string;
+      origin: string;
+      existingProductIds?: string[];
+      newProducts?: Array<{ title: string; affiliateUrl: string; imageUrl: string | null }>;
+    }) =>
+      z
+        .object({
+          pinId: z.string().uuid(),
+          origin: z.string().url(),
+          existingProductIds: z.array(z.string().uuid()).optional().default([]),
+          newProducts: z
+            .array(
+              z.object({
+                title: z.string(),
+                affiliateUrl: z.string().url(),
+                imageUrl: z.string().url().nullable(),
+              }),
+            )
+            .optional()
+            .default([]),
+        })
+        .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+
+    const { data: pin, error: pinErr } = await supabase
+      .from("pins")
+      .select("id,title,image_url,storefront_id")
+      .eq("id", data.pinId)
+      .maybeSingle();
+    if (pinErr) throw new Error(pinErr.message);
+    if (!pin) throw new Error("Pin not found");
+    if (!pin.storefront_id) throw new Error("Pin has no storefront");
+
+    const { data: storefront, error: sfErr } = await supabase
+      .from("storefronts")
+      .select("id,slug")
+      .eq("id", pin.storefront_id)
+      .maybeSingle();
+    if (sfErr) throw new Error(sfErr.message);
+    if (!storefront) throw new Error("Storefront not found");
+
+    const { count: collCount } = await supabase
+      .from("collections")
+      .select("*", { count: "exact", head: true })
+      .eq("storefront_id", storefront.id);
+
+    return performGoLive(
+      supabase,
+      userId,
+      data.origin,
+      pin,
+      storefront,
+      collCount ?? 0,
+      data.existingProductIds,
+      data.newProducts,
+    );
+  });
+
+// -------------------------------------------------------------
+// Board-level bulk monetization: find every un-monetized pin in a board
+// (a synced Pinterest board = a `collections` row), run each through the
+// same real visual-search pipeline, and let the swipe UI approve/reject
+// them — approvals go through the exact same performGoLive() path as the
+// single-pin flow above, just looped.
+// -------------------------------------------------------------
+
+export type BoardCandidate = {
+  pinId: string;
+  title: string;
+  imageUrl: string | null;
+};
+
+export const getBoardMonetizationCandidates = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: { collectionId: string }) =>
+    z.object({ collectionId: z.string().uuid() }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+
+    const { data: collection, error: cErr } = await supabase
+      .from("collections")
+      .select("id,name,storefront_id")
+      .eq("id", data.collectionId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (cErr) throw new Error(cErr.message);
+    if (!collection) throw new Error("Board not found");
+
+    // Deliberately no visual search here — that's the slow part (an
+    // external API call per pin). Return the pin list instantly; the swipe
+    // UI fetches each pin's recommendation on demand (current + next few),
+    // so the user starts swiping in ~1 request instead of waiting on all of
+    // them up front.
+    const { data: pins, error: pErr } = await supabase
+      .from("pins")
+      .select("id,title,image_url")
+      .eq("collection_id", data.collectionId)
+      .is("product_id", null)
+      .order("created_at", { ascending: false });
+    if (pErr) throw new Error(pErr.message);
+
+    const candidates: BoardCandidate[] = (pins ?? []).map((p) => ({
+      pinId: p.id,
+      title: p.title,
+      imageUrl: p.image_url,
+    }));
+
+    return { boardName: collection.name, candidates };
+  });
+
+export const getPinRecommendation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: { pinId: string }) => z.object({ pinId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { supabase } = context;
+    // RLS scopes this to the caller's own pin (see "pins owner all" policy) —
+    // no explicit user_id check needed, matching goLivePin's lookup above.
+    const { data: pin, error } = await supabase
+      .from("pins")
+      .select("id,image_url")
+      .eq("id", data.pinId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!pin) throw new Error("Pin not found");
+    if (!pin.image_url) return { recommendation: null as VisualMatch | null };
+    // Let real failures (bad API key, network error, non-"no results" 500s)
+    // throw and surface to the client as a retryable error — searchByImage
+    // already collapses a genuine "no results" response into `[]`, so a
+    // clean `null` here always means "confirmed no match", never "broke".
+    const matches = await searchByImage(pin.image_url);
+    return { recommendation: (matches[0] ?? null) as VisualMatch | null };
+  });
+
+export const approveBoardPins = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    (d: {
+      origin: string;
+      approvals: Array<{
+        pinId: string;
+        products: Array<{ title: string; affiliateUrl: string; imageUrl: string | null }>;
+      }>;
+    }) =>
+      z
+        .object({
+          origin: z.string().url(),
+          approvals: z
+            .array(
+              z.object({
+                pinId: z.string().uuid(),
+                products: z
+                  .array(
+                    z.object({
+                      title: z.string(),
+                      affiliateUrl: z.string().url(),
+                      imageUrl: z.string().url().nullable(),
+                    }),
+                  )
+                  .min(1),
+              }),
+            )
+            .min(1),
+        })
+        .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+
+    const pinIds = data.approvals.map((a) => a.pinId);
+    const { data: pinRows, error: pErr } = await supabase
+      .from("pins")
+      .select("id,title,image_url,storefront_id")
+      .in("id", pinIds);
+    if (pErr) throw new Error(pErr.message);
+    const pinById = new Map((pinRows ?? []).map((p: any) => [p.id as string, p]));
+
+    const storefrontId = (pinRows ?? [])[0]?.storefront_id as string | undefined;
+    if (!storefrontId) throw new Error("No storefront found for these pins");
+    const { data: storefront, error: sfErr } = await supabase
+      .from("storefronts")
+      .select("id,slug")
+      .eq("id", storefrontId)
+      .maybeSingle();
+    if (sfErr) throw new Error(sfErr.message);
+    if (!storefront) throw new Error("Storefront not found");
+
+    const { count: collCount } = await supabase
+      .from("collections")
+      .select("*", { count: "exact", head: true })
+      .eq("storefront_id", storefront.id);
+    let nextPosition = collCount ?? 0;
+
+    let approved = 0;
+    const failed: string[] = [];
+    for (const a of data.approvals) {
+      const pin = pinById.get(a.pinId);
+      if (!pin) {
+        failed.push(`${a.pinId}: pin not found`);
+        continue;
+      }
+      try {
+        await performGoLive(
+          supabase,
+          userId,
+          data.origin,
+          pin,
+          storefront,
+          nextPosition++,
+          [],
+          a.products,
+        );
+        approved++;
+      } catch (e) {
+        failed.push(`${pin.title || a.pinId}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
+    return { approved, failed };
+  });

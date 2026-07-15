@@ -51,6 +51,24 @@ export function getBrand(id: string): Brand | undefined {
   return ALL_BRANDS.find((b) => b.id === id);
 }
 
+// Visual-search results report a retailer name (e.g. "Amazon.in", "Flipkart")
+// with no commission rate of their own — match it against our real brand
+// catalog's commission rate; fall back to a conservative flat estimate for
+// retailers we don't have a specific rate for.
+const DEFAULT_COMMISSION_PCT = 8;
+
+export function estimateCommissionPct(source: string): number {
+  const s = source.toLowerCase();
+  const match = ALL_BRANDS.find(
+    (b) => s.includes(b.name.toLowerCase()) || (b.domain && s.includes(b.domain.split(".")[0])),
+  );
+  return match?.commission ?? DEFAULT_COMMISSION_PCT;
+}
+
+export function estimateEarning(source: string, extractedValue: number): number {
+  return Math.round(extractedValue * (estimateCommissionPct(source) / 100));
+}
+
 export function brandLogoUrl(brand: Brand): string | null {
   if (!brand.domain) return null;
   const token = import.meta.env.VITE_LOVABLE_CONNECTOR_LOGO_DEV_API_KEY;

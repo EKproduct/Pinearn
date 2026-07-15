@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, Link2, Plus } from "lucide-react";
+import { ChevronLeft, Link2, Plus, Search, Sparkles, MousePointerClick, X } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
@@ -15,22 +15,68 @@ import {
 } from "./pins";
 
 
+type AttachSearch = { collection?: string; pinId?: string; intent?: "monetize" };
+
 export const Route = createFileRoute("/_authenticated/pins_/attach")({
   component: AttachPage,
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): AttachSearch => ({
     collection: typeof search.collection === "string" ? search.collection : undefined,
+    pinId: typeof search.pinId === "string" ? search.pinId : undefined,
+    intent: search.intent === "monetize" ? "monetize" : undefined,
   }),
 });
 
 type Tab = "pins" | "boards";
+type SortBy = "" | "newest" | "impressions" | "clicks" | "ctr" | "earnings";
+
+const SORT_OPTIONS: { value: SortBy; label: string }[] = [
+  { value: "newest", label: "Newest" },
+  { value: "impressions", label: "Impressions" },
+  { value: "clicks", label: "Clicks" },
+  { value: "ctr", label: "CTR" },
+  { value: "earnings", label: "Earnings" },
+];
+
+function sortPins(pins: Pin[], sortBy: SortBy): Pin[] {
+  return [...pins].sort((a, b) => {
+    switch (sortBy) {
+      case "impressions":
+        return b.impressions - a.impressions;
+      case "clicks":
+        return b.clicks - a.clicks;
+      case "earnings":
+        return b.earnings_cents - a.earnings_cents;
+      case "ctr": {
+        const ctrA = a.impressions > 0 ? a.clicks / a.impressions : 0;
+        const ctrB = b.impressions > 0 ? b.clicks / b.impressions : 0;
+        return ctrB - ctrA;
+      }
+      case "newest":
+      case "":
+      default:
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    }
+  });
+}
 
 function AttachPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
-  const [dialogPinId, setDialogPinId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>(search.collection ? "boards" : "pins");
+  // Deep-linked from elsewhere (e.g. the dashboard's "Monetise" button on a
+  // specific pin) — jump straight to that pin's attach dialog, skipping the
+  // pick-a-pin grid.
+  const [dialogPinId, setDialogPinId] = useState<string | null>(search.pinId ?? null);
+  const [tab, setTab] = useState<Tab>(search.collection || search.intent === "monetize" ? "boards" : "pins");
   const [activeBoardId, setActiveBoardId] = useState<string | null>(search.collection ?? null);
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<SortBy>("");
+  // Whether we've asked "select a pin" vs "monetise the whole board" yet for
+  // the currently active board. Deep-linked boards (?collection=) skip the
+  // chooser and go straight to the pin grid, matching prior deep-link behavior.
+  const [boardChoice, setBoardChoice] = useState<"ask" | "select-pin">(
+    search.collection ? "select-pin" : "ask",
+  );
 
 
   const { data: pins = [], isLoading } = useQuery({
@@ -92,6 +138,17 @@ function AttachPage() {
 
   const activeBoard = boards.find((b) => b.collection.id === activeBoardId) ?? null;
   const dialogPin = pins.find((p) => p.id === dialogPinId) ?? null;
+  // "Unassigned" is a synthetic bucket (pins with no collection_id), not a
+  // real collection row — exclude it when picking a board to bulk-monetize.
+  const selectableBoards =
+    search.intent === "monetize" ? boards.filter((b) => b.collection.id !== "__unassigned__") : boards;
+
+  const visiblePins = useMemo(() => {
+    const base = activeBoard ? activeBoard.pins : pins;
+    const q = query.trim().toLowerCase();
+    const matched = q ? base.filter((p) => p.title?.toLowerCase().includes(q)) : base;
+    return sortPins(matched, sortBy);
+  }, [activeBoard, pins, query, sortBy]);
 
   const togglePin = (id: string) => {
     setSelectedPinId((cur) => (cur === id ? null : id));
@@ -99,6 +156,15 @@ function AttachPage() {
 
   const openAttachDialog = () => {
     if (selectedPinId) setDialogPinId(selectedPinId);
+  };
+
+  const openBoard = (id: string) => {
+    if (search.intent === "monetize") {
+      navigate({ to: "/pins/monetize-board", search: { collectionId: id } });
+      return;
+    }
+    setActiveBoardId(id);
+    setBoardChoice("ask");
   };
 
   return (
@@ -152,18 +218,55 @@ function AttachPage() {
               {activeBoard.pins.length} {activeBoard.pins.length === 1 ? "Pin" : "Pins"}
             </p>
           </div>
-          {activeBoard.pins.length === 0 ? (
+          {boardChoice === "ask" ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                onClick={() => setBoardChoice("select-pin")}
+                className="flex flex-col items-start gap-2 rounded-2xl border border-border bg-surface p-5 text-left transition hover:shadow-elevate active:scale-[0.98]"
+              >
+                <span className="grid h-10 w-10 place-items-center rounded-full bg-primary/10 text-primary">
+                  <MousePointerClick className="h-5 w-5" />
+                </span>
+                <span className="text-sm font-semibold">Select pin from board</span>
+                <span className="text-xs text-muted-foreground">
+                  Pick one pin and attach products to it.
+                </span>
+              </button>
+              {activeBoard.collection.id !== "__unassigned__" && (
+                <button
+                  onClick={() =>
+                    navigate({
+                      to: "/pins/monetize-board",
+                      search: { collectionId: activeBoard.collection.id },
+                    })
+                  }
+                  className="flex flex-col items-start gap-2 rounded-2xl border border-border bg-surface p-5 text-left transition hover:shadow-elevate active:scale-[0.98]"
+                >
+                  <span className="grid h-10 w-10 place-items-center rounded-full bg-gradient-primary text-primary-foreground shadow-glow">
+                    <Sparkles className="h-5 w-5" />
+                  </span>
+                  <span className="text-sm font-semibold">Monetise full board</span>
+                  <span className="text-xs text-muted-foreground">
+                    Swipe through AI-recommended products for every unmonetised pin.
+                  </span>
+                </button>
+              )}
+            </div>
+          ) : activeBoard.pins.length === 0 ? (
             <EmptyBlock
               text="No pins in this board."
               actionLabel="Create pin"
               onAction={() => navigate({ to: "/pins/create" })}
             />
           ) : (
-            <PinGrid
-              pins={activeBoard.pins}
-              selectedId={selectedPinId}
-              onToggle={togglePin}
-            />
+            <>
+              <SearchSortBar query={query} onQuery={setQuery} sortBy={sortBy} onSortBy={setSortBy} />
+              {visiblePins.length === 0 ? (
+                <EmptyBlock text={`No pins match "${query}".`} />
+              ) : (
+                <PinGrid pins={visiblePins} selectedId={selectedPinId} onToggle={togglePin} />
+              )}
+            </>
           )}
         </div>
       ) : tab === "pins" ? (
@@ -174,16 +277,19 @@ function AttachPage() {
             onAction={() => navigate({ to: "/pins/create" })}
           />
         ) : (
-          <PinGrid
-            pins={pins}
-            selectedId={selectedPinId}
-            onToggle={togglePin}
-          />
+          <div className="space-y-4">
+            <SearchSortBar query={query} onQuery={setQuery} sortBy={sortBy} onSortBy={setSortBy} />
+            {visiblePins.length === 0 ? (
+              <EmptyBlock text={`No pins match "${query}".`} />
+            ) : (
+              <PinGrid pins={visiblePins} selectedId={selectedPinId} onToggle={togglePin} />
+            )}
+          </div>
         )
-      ) : boards.length === 0 ? (
+      ) : selectableBoards.length === 0 ? (
         <EmptyBlock text="No boards yet." />
       ) : (
-        <BoardsGrid boards={boards} onSelect={setActiveBoardId} />
+        <BoardsGrid boards={selectableBoards} onSelect={openBoard} />
       )}
 
       {/* Sticky CTA once a pin is selected */}
@@ -203,6 +309,56 @@ function AttachPage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+function SearchSortBar({
+  query,
+  onQuery,
+  sortBy,
+  onSortBy,
+}: {
+  query: string;
+  onQuery: (v: string) => void;
+  sortBy: SortBy;
+  onSortBy: (v: SortBy) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex flex-1 items-center gap-2 rounded-full border border-border bg-surface px-3 py-2">
+        <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder="Search pins by title…"
+          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+        />
+        {query && (
+          <button
+            onClick={() => onQuery("")}
+            aria-label="Clear search"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      <select
+        value={sortBy}
+        onChange={(e) => onSortBy(e.target.value as SortBy)}
+        className="h-[38px] shrink-0 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground focus:border-primary focus:outline-none"
+      >
+        <option value="" disabled>
+          Sort by
+        </option>
+        {SORT_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 

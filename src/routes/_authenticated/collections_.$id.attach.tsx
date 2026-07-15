@@ -4,7 +4,6 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
 import {
   Loader2,
-  Check,
   Sparkles,
   Wand2,
   Link2,
@@ -14,10 +13,10 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { toast } from "sonner";
+import { SuggestionCard } from "@/components/suggestion-card";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { visualSearchImage } from "@/lib/pinterest.functions";
-import { pickPlaceholderImage } from "@/lib/placeholder-image";
 
 export const Route = createFileRoute("/_authenticated/collections_/$id/attach")({
   component: AttachToCollectionPage,
@@ -89,8 +88,7 @@ function AttachToCollectionPage() {
     enabled: !!imageUrl,
     staleTime: 5 * 60_000,
   });
-  const suggestions: Array<{ title: string; query: string; reason?: string }> =
-    aiData?.suggestions ?? [];
+  const suggestions = aiData?.suggestions ?? [];
 
   const [attachedIdxs, setAttachedIdxs] = useState<Set<number>>(new Set());
   const [pendingIdx, setPendingIdx] = useState<Set<number>>(new Set());
@@ -108,9 +106,6 @@ function AttachToCollectionPage() {
     setAttachedIdxs(new Set());
   }, [aiData]);
 
-  const aiLinkFor = (s: { query: string }) =>
-    `https://www.amazon.in/s?k=${encodeURIComponent(s.query)}`;
-
   const attachSuggestion = async (idx: number) => {
     if (pendingIdx.has(idx) || attachedIdxs.has(idx)) return;
     const s = suggestions[idx];
@@ -125,8 +120,8 @@ function AttachToCollectionPage() {
         storefront_id: collection.storefront_id,
         collection_id: collection.id,
         title: s.title,
-        affiliate_url: aiLinkFor(s),
-        image_url: pickPlaceholderImage(s.query),
+        affiliate_url: s.link,
+        image_url: s.thumbnail ?? collection.cover_image_url,
       });
       if (error) throw error;
       setAttachedIdxs((prev) => new Set(prev).add(idx));
@@ -329,46 +324,19 @@ function AttachToCollectionPage() {
                 No suggestions yet.
               </p>
             ) : (
-              suggestions.map((s, idx) => {
-                const isAttached = attachedIdxs.has(idx);
-                const isPending = pendingIdx.has(idx);
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => attachSuggestion(idx)}
-                    disabled={isPending || isAttached}
-                    className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate disabled:opacity-70 ${
-                      isAttached
-                        ? "border-primary ring-2 ring-primary"
-                        : "border-primary/30 hover:border-primary/60"
-                    }`}
-                  >
-                    <div className="relative aspect-square w-full overflow-hidden bg-primary/10">
-                      <img
-                        src={pickPlaceholderImage(s.query)}
-                        alt={s.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                      />
-                    </div>
-                    {isPending ? (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary/80 text-primary-foreground shadow">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      </span>
-                    ) : isAttached ? (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                        <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                      </span>
-                    ) : null}
-                    <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                      <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                        {s.title}
-                      </h3>
-                    </div>
-                  </button>
-                );
-              })
+              suggestions.map((s, idx) => (
+                <SuggestionCard
+                  key={idx}
+                  title={s.title}
+                  thumbnail={s.thumbnail}
+                  source={s.source}
+                  link={s.link}
+                  price={s.price}
+                  selected={attachedIdxs.has(idx)}
+                  pending={pendingIdx.has(idx)}
+                  onToggle={() => attachSuggestion(idx)}
+                />
+              ))
             )}
           </div>
         </div>

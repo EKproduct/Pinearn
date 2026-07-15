@@ -71,6 +71,8 @@ type Pin = {
   image_url: string | null;
   collection_id: string | null;
   external_url: string | null;
+  product_id: string | null;
+  status: string;
 };
 
 type Board = {
@@ -179,7 +181,7 @@ function StorefrontPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("pins")
-        .select("id,title,image_url,collection_id,external_url")
+        .select("id,title,image_url,collection_id,external_url,product_id,status")
         .eq("storefront_id", storefront!.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -346,6 +348,9 @@ function StorefrontPage() {
 
   const createBoard = useMutation({
     mutationFn: async (p: { name: string; coverFile: File | null; collectionIds: string[] }) => {
+      if (p.collectionIds.length === 0) {
+        throw new Error("Boards are built from your existing collections — pick at least one.");
+      }
       const { data: userRes } = await supabase.auth.getUser();
       let coverUrl: string | null = null;
       if (p.coverFile) coverUrl = await uploadCover(p.coverFile, "boards");
@@ -443,6 +448,21 @@ function StorefrontPage() {
     }
     return map;
   }, [boardCollections]);
+
+  // A collection only counts as "in the storefront" once at least one of its
+  // pins is actually live — a pin only goes live from the preview page's
+  // explicit Go Live button (which requires a real product attached), so
+  // this is the one true signal, not just "has a product_id" (a pin can have
+  // a product picked mid-edit without ever having gone live).
+  const pinsWithProduct = useMemo(() => pins.filter((p) => p.status === "live"), [pins]);
+  const storefrontCollections = useMemo(
+    () => collections.filter((c) => pinsWithProduct.some((p) => p.collection_id === c.id)),
+    [collections, pinsWithProduct],
+  );
+  const storefrontCollectionIds = useMemo(
+    () => new Set(storefrontCollections.map((c) => c.id)),
+    [storefrontCollections],
+  );
 
   if (sfLoading) {
     return (
@@ -681,7 +701,7 @@ function StorefrontPage() {
             {"\n"}
           </h3>
           <div className="flex items-center gap-2">
-            {(tab === "collections" ? collections.length : boards.length) >= 2 && (
+            {(tab === "collections" ? storefrontCollections.length : boards.length) >= 2 && (
               <button
                 onClick={() => setReorderOpen(true)}
                 className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
@@ -707,14 +727,16 @@ function StorefrontPage() {
         </div>
 
         {tab === "collections" ? (
-          collections.length === 0 ? (
+          storefrontCollections.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center">
               <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-primary shadow-glow">
                 <Layers className="h-6 w-6 text-primary-foreground" />
               </div>
               <h4 className="mt-4 font-display text-base font-semibold">No collections yet</h4>
               <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
-                Sync your Pinterest boards or create a collection to start.
+                {collections.length === 0
+                  ? "Sync your Pinterest boards or create a collection to start."
+                  : "Attach a product to a pin and its collection will appear here automatically."}
               </p>
               <button
                 onClick={startSync}
@@ -731,8 +753,8 @@ function StorefrontPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
-              {collections.map((c) => {
-                const cPins = pins.filter((p) => p.collection_id === c.id);
+              {storefrontCollections.map((c) => {
+                const cPins = pinsWithProduct.filter((p) => p.collection_id === c.id);
                 const coverUrl =
                   c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null;
                 return (
@@ -780,13 +802,15 @@ function StorefrontPage() {
           <div className="grid grid-cols-2 gap-4">
             {boards.map((b) => {
               const memberIds = collectionsByBoard.get(b.id) ?? [];
-              const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+              const memberCollections = collections.filter(
+                (c) => memberIds.includes(c.id) && storefrontCollectionIds.has(c.id),
+              );
               let coverUrl = b.cover_image_url;
               const mosaic: string[] = [];
               for (const mc of memberCollections) {
                 const img =
                   mc.cover_image_url ??
-                  pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                  pinsWithProduct.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
                   null;
                 if (img) mosaic.push(img);
               }
@@ -795,7 +819,7 @@ function StorefrontPage() {
                 <BoardCard
                   key={b.id}
                   name={b.name}
-                  count={memberIds.length}
+                  count={memberCollections.length}
                   coverUrl={coverUrl}
                   mosaic={mosaic}
                   brandColor={brandColor}
@@ -836,7 +860,7 @@ function StorefrontPage() {
 
       {showNewBoard && (
         <NewBoardDialog
-          collections={collections}
+          collections={storefrontCollections}
           onCancel={() => setShowNewBoard(false)}
           onCreate={(v) => createBoard.mutate(v)}
           onCreateCollection={() => {
@@ -933,8 +957,8 @@ function StorefrontPage() {
           title={tab === "collections" ? "Reorder collections" : "Reorder boards"}
           items={
             tab === "collections"
-              ? collections.map((c) => {
-                  const cPins = pins.filter((p) => p.collection_id === c.id);
+              ? storefrontCollections.map((c) => {
+                  const cPins = pinsWithProduct.filter((p) => p.collection_id === c.id);
                   return {
                     id: c.id,
                     name: c.name,
@@ -945,13 +969,15 @@ function StorefrontPage() {
                 })
               : boards.map((b) => {
                   const memberIds = collectionsByBoard.get(b.id) ?? [];
-                  const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+                  const memberCollections = collections.filter(
+                    (c) => memberIds.includes(c.id) && storefrontCollectionIds.has(c.id),
+                  );
                   let coverUrl = b.cover_image_url;
                   if (!coverUrl) {
                     for (const mc of memberCollections) {
                       const img =
                         mc.cover_image_url ??
-                        pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                        pinsWithProduct.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
                         null;
                       if (img) {
                         coverUrl = img;
@@ -962,7 +988,7 @@ function StorefrontPage() {
                   return {
                     id: b.id,
                     name: b.name,
-                    subtitle: `${memberIds.length} collection${memberIds.length === 1 ? "" : "s"}`,
+                    subtitle: `${memberCollections.length} collection${memberCollections.length === 1 ? "" : "s"}`,
                     coverUrl,
                     coverColor: null,
                   };
@@ -1433,7 +1459,7 @@ function NewBoardDialog({
             Cancel
           </button>
           <button
-            disabled={!name.trim() || pending}
+            disabled={!name.trim() || selected.size === 0 || pending}
             onClick={() =>
               onCreate({ name: name.trim(), coverFile, collectionIds: Array.from(selected) })
             }
@@ -1442,6 +1468,11 @@ function NewBoardDialog({
             {pending && <Loader2 className="h-4 w-4 animate-spin" />} Create
           </button>
         </div>
+        {collections.length > 0 && selected.size === 0 && (
+          <p className="mt-2 text-right text-[11px] text-muted-foreground">
+            Pick at least one collection — boards are built from your existing collections.
+          </p>
+        )}
       </div>
     </ModalShell>
   );

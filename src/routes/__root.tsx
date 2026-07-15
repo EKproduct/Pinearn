@@ -114,12 +114,32 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 function RootShell({ children }: { children: ReactNode }) {
+  // The static `data-tsd-source` attributes below are load-bearing, not
+  // decorative — do not remove them.
+  //
+  // In dev mode, @tanstack/devtools-vite's inject-source plugin auto-tags
+  // every JSX element with `data-tsd-source="<file>:<line>:<col>"` (its
+  // click-to-open-in-editor feature). For most components that's harmless.
+  // But this file's SSR module graph and the client's HMR/Fast-Refresh
+  // module graph transform this exact file differently before that plugin
+  // computes positions (the client pipeline prepends extra boilerplate,
+  // shifting line/column), so the *same* <html>/<head>/<body> node gets two
+  // different computed values — e.g. observed "__root.tsx:118:5" from SSR
+  // vs "__root.tsx:121:10" from the client bundle. Since RootShell is the
+  // one component whose output becomes the hydration root itself
+  // (hydrateRoot targets `document`), that attribute mismatch surfaces as
+  // a hydration warning on <html>.
+  //
+  // The plugin skips elements that already carry a `data-tsd-source`
+  // attribute in source, so giving these three elements a fixed, identical
+  // (harmless) value here suppresses the buggy auto-injection at its exact
+  // source — every other component in the app keeps the real dev feature.
   return (
-    <html lang="en">
-      <head>
+    <html lang="en" data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}>
+      <head data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}>
         <HeadContent />
       </head>
-      <body>
+      <body data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}>
         {children}
         <Scripts />
       </body>

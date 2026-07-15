@@ -69,7 +69,6 @@ function Landing() {
       >
         <Link
           to="/auth"
-          search={{ mode: "signup" }}
           className="group inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3.5 text-sm font-semibold text-primary-foreground shadow-glow ring-4 ring-primary/10 transition hover:scale-[1.03] hover:bg-primary/95"
         >
           <Sparkles className="h-4 w-4" />
@@ -131,7 +130,6 @@ function Nav() {
           </Link>
           <Link
             to="/auth"
-            search={{ mode: "signup" }}
             className="hidden items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:inline-flex"
           >
             Get started <ArrowRight className="h-3.5 w-3.5" />
@@ -213,7 +211,6 @@ function Nav() {
               </Link>
               <Link
                 to="/auth"
-                search={{ mode: "signup" }}
                 onClick={() => setMobileOpen(false)}
                 className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow"
               >
@@ -252,7 +249,6 @@ function Hero({ heroCtaRef }: { heroCtaRef: React.MutableRefObject<HTMLDivElemen
           >
             <Link
               to="/auth"
-              search={{ mode: "signup" }}
               className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-semibold text-primary-foreground shadow-glow transition hover:scale-[1.02]"
             >
               Start earning free <ArrowRight className="h-4 w-4" />
@@ -471,7 +467,6 @@ function CTA() {
           </p>
           <Link
             to="/auth"
-            search={{ mode: "signup" }}
             className="mt-8 inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-semibold text-primary-foreground shadow-glow"
           >
             Create your Pinearn <ArrowRight className="h-4 w-4" />

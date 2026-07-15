@@ -16,10 +16,10 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { SuggestionCard } from "@/components/suggestion-card";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { visualSearchImage, createPinterestPin } from "@/lib/pinterest.functions";
-import { pickPlaceholderImage } from "@/lib/placeholder-image";
 import type { Collection, Product, Storefront } from "./pins";
 
 type PinterestBoard = { id: string; name: string };
@@ -452,17 +452,13 @@ function StepProducts({
     enabled: !!imageUrl,
     staleTime: 5 * 60_000,
   });
-  const suggestions: Array<{ title: string; query: string; reason?: string }> =
-    aiData?.suggestions ?? [];
+  const suggestions = aiData?.suggestions ?? [];
 
   // Reset AI selection tracking when a fresh set of suggestions arrives.
   useEffect(() => {
     setAiProductIds({});
     setPendingAI(new Set());
   }, [aiData]);
-
-  const aiLinkFor = (s: { query: string }) =>
-    `https://www.amazon.in/s?k=${encodeURIComponent(s.query)}`;
 
   const checkedAI = new Set<number>(
     Object.entries(aiProductIds)
@@ -496,8 +492,8 @@ function StepProducts({
           user_id: userId,
           storefront_id: targetStorefront,
           title: s.title,
-          affiliate_url: aiLinkFor(s),
-          image_url: pickPlaceholderImage(s.query),
+          affiliate_url: s.link,
+          image_url: s.thumbnail,
         })
         .select("id")
         .single();
@@ -682,54 +678,19 @@ function StepProducts({
               No suggestions yet.
             </p>
           ) : (
-            suggestions.map((s, idx) => {
-              const isChecked = checkedAI.has(idx);
-              const isPending = pendingAI.has(idx);
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => toggleAI(idx)}
-                  disabled={isPending}
-                  className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate disabled:opacity-70 ${
-                    isChecked
-                      ? "border-primary ring-2 ring-primary"
-                      : "border-primary/30 hover:border-primary/60"
-                  }`}
-                >
-                  <a
-                    href={aiLinkFor(s)}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    onClick={(e) => e.stopPropagation()}
-                    className="relative aspect-square w-full overflow-hidden bg-primary/10"
-                  >
-                    <img
-                      src={pickPlaceholderImage(s.query)}
-                      alt={s.title}
-                      loading="lazy"
-                      className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                    />
-                  </a>
-                  {isPending ? (
-                    <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary/80 text-primary-foreground shadow">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    </span>
-                  ) : isChecked ? (
-                    <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                      <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                    </span>
-                  ) : null}
-                  <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                    <div className="min-w-0">
-                      <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                        {s.title}
-                      </h3>
-                    </div>
-                  </div>
-                </button>
-              );
-            })
+            suggestions.map((s, idx) => (
+              <SuggestionCard
+                key={idx}
+                title={s.title}
+                thumbnail={s.thumbnail}
+                source={s.source}
+                link={s.link}
+                price={s.price}
+                selected={checkedAI.has(idx)}
+                pending={pendingAI.has(idx)}
+                onToggle={() => toggleAI(idx)}
+              />
+            ))
           )}
         </div>
       </div>
