@@ -69,6 +69,16 @@ export function estimateEarning(source: string, extractedValue: number): number 
   return Math.round(extractedValue * (estimateCommissionPct(source) / 100));
 }
 
+// Real stored products have no brand field of their own — derive a display
+// name from the affiliate link's domain when no better label is on hand.
+export function hostBrand(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").split(".")[0];
+  } catch {
+    return "shop";
+  }
+}
+
 export function brandLogoUrl(brand: Brand): string | null {
   if (!brand.domain) return null;
   const token = import.meta.env.VITE_LOVABLE_CONNECTOR_LOGO_DEV_API_KEY;

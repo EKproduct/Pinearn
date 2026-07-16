@@ -5,15 +5,23 @@ import {
   Clipboard,
   ExternalLink,
   Info,
+  Link as LinkIcon,
   Loader2,
   Sparkles,
   ChevronDown,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { getBrand, brandLogoUrl } from "@/lib/brands";
 import { BrandLogo } from "@/components/brand-card";
+import {
+  ShareSheet,
+  CollectionPicker,
+  copyToClipboard,
+  type CreatedProduct,
+} from "@/components/affiliate-link-dialog";
 
 export const Route = createFileRoute("/_authenticated/brands_/$brandId")({
   loader: ({ params }) => {
@@ -59,6 +67,8 @@ function BrandDetailPage() {
   const [tab, setTab] = useState<"tc">("tc");
   const [url, setUrl] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [createdProduct, setCreatedProduct] = useState<CreatedProduct | null>(null);
+  const [pickingCollection, setPickingCollection] = useState(false);
   const qc = useQueryClient();
   const router = useRouter();
 
@@ -92,18 +102,24 @@ function BrandDetailPage() {
       if (sfErr) throw sfErr;
       if (!sf) throw new Error("Your storefront isn't ready yet.");
 
-      const { error } = await supabase.from("storefront_products").insert({
-        user_id: userId,
-        storefront_id: sf.id,
-        title: brand.name,
-        affiliate_url: link,
-      });
+      const { data: inserted, error } = await supabase
+        .from("storefront_products")
+        .insert({
+          user_id: userId,
+          storefront_id: sf.id,
+          title: brand.name,
+          affiliate_url: link,
+        })
+        .select("id,affiliate_url,storefront_id")
+        .single();
       if (error) throw error;
+      return inserted as CreatedProduct;
     },
-    onSuccess: () => {
+    onSuccess: (inserted) => {
       qc.invalidateQueries({ queryKey: ["all-products"] });
       qc.invalidateQueries({ queryKey: ["storefront-products"] });
       toast.success("Affiliate link created");
+      setCreatedProduct(inserted);
       setUrl("");
     },
     onError: (e: Error) => toast.error(e.message),
@@ -116,6 +132,19 @@ function BrandDetailPage() {
     } catch {
       toast.error("Clipboard access blocked");
     }
+  }
+
+  async function copyLink() {
+    if (!createdProduct) return;
+    const ok = await copyToClipboard(createdProduct.affiliate_url);
+    if (ok) toast.success("Link copied");
+    else toast.error("Could not copy link");
+  }
+
+  function resetLinkFlow() {
+    setCreatedProduct(null);
+    setPickingCollection(false);
+    setUrl("");
   }
 
   const logo = brandLogoUrl(brand);
@@ -182,24 +211,35 @@ function BrandDetailPage() {
                 e.preventDefault();
                 create.mutate();
               }}
-              className="mt-3 flex items-center gap-2 rounded-full bg-surface pl-4 pr-1.5 py-1.5"
+              className="mt-3"
             >
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder={`Paste any ${brand.name} product link here`}
-                className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-              />
+              <div className="flex items-center gap-2 rounded-full bg-surface pl-4 pr-1.5 py-1.5">
+                <input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder={`Paste any ${brand.name} product link here`}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={pasteFromClipboard}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground transition hover:bg-surface-2"
+                  aria-label="Paste"
+                >
+                  <Clipboard className="h-4 w-4" />
+                </button>
+              </div>
               <button
-                type="button"
-                onClick={pasteFromClipboard}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground transition hover:bg-surface-2"
-                aria-label="Paste"
+                type="submit"
+                disabled={create.isPending || !url.trim()}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-surface px-4 py-3 text-sm font-semibold text-foreground shadow-sm transition disabled:opacity-60"
               >
                 {create.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Creating link...
+                  </>
                 ) : (
-                  <Clipboard className="h-4 w-4" />
+                  "Create affiliate link"
                 )}
               </button>
             </form>
@@ -253,6 +293,65 @@ function BrandDetailPage() {
           </ol>
         </div>
       </div>
+
+      {/* Post-generation share sheet — same bottom-sheet/modal shell as the
+          dashboard's "Create affiliate link" quick action. */}
+      {createdProduct && (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 px-4 pb-6 pt-24 backdrop-blur-sm sm:items-center sm:pb-4"
+          onClick={resetLinkFlow}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md overflow-hidden rounded-3xl border border-border bg-surface shadow-elevate"
+          >
+            <div className="flex items-center justify-between px-6 pt-5">
+              <div className="flex items-center gap-2 text-primary">
+                {pickingCollection ? (
+                  <button
+                    onClick={() => setPickingCollection(false)}
+                    className="flex items-center gap-1 text-xs font-semibold uppercase tracking-widest"
+                    aria-label="Back"
+                  >
+                    <ArrowLeft className="h-4 w-4" /> Back
+                  </button>
+                ) : (
+                  <>
+                    <LinkIcon className="h-4 w-4" />
+                    <span className="text-xs font-semibold uppercase tracking-widest">Affiliate</span>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={resetLinkFlow}
+                className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 text-foreground transition hover:bg-surface"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-6 pb-6 pt-3">
+              {pickingCollection ? (
+                <CollectionPicker
+                  product={createdProduct}
+                  onDone={(collectionId) => {
+                    resetLinkFlow();
+                    router.navigate({ to: "/storefront", search: { collection: collectionId } as never });
+                  }}
+                />
+              ) : (
+                <ShareSheet
+                  link={createdProduct.affiliate_url}
+                  onCopy={copyLink}
+                  onAddToStorefront={() => setPickingCollection(true)}
+                  onCreateAnother={resetLinkFlow}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

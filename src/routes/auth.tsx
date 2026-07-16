@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { ArrowRight, Loader2, Sparkles, Phone, KeyRound, ChevronLeft } from "lucide-react";
+import { ArrowRight, Loader2, Phone, KeyRound, ChevronLeft } from "lucide-react";
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
@@ -210,10 +210,7 @@ function AuthPage() {
 
       <div className="relative z-10 w-full sm:max-w-lg">
         <div className="rounded-3xl border border-border bg-surface/85 px-5 py-6 shadow-elevate backdrop-blur-xl sm:p-8">
-          <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-sm font-medium text-primary">
-            <Sparkles className="h-4 w-4" /> Creator sign-in
-          </div>
-          <h1 className="mt-3 font-display text-2xl font-semibold leading-tight">
+          <h1 className="font-display text-2xl font-semibold leading-tight">
             {step === "phone" ? "Sign in with your phone" : "Enter the code"}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">

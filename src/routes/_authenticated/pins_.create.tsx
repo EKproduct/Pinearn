@@ -4,7 +4,6 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
 import {
   Upload,
-  Image as ImageIcon,
   Loader2,
   Check,
   ChevronRight,
@@ -16,9 +15,10 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { SuggestionCard } from "@/components/suggestion-card";
+import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
+import { hostBrand } from "@/lib/brands";
 import { visualSearchImage, createPinterestPin } from "@/lib/pinterest.functions";
 import type { Collection, Product, Storefront } from "./pins";
 
@@ -57,9 +57,13 @@ function CreatePinWizard() {
   const { data: boards = [] } = useQuery({
     queryKey: ["pinterest-boards"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("collections")
         .select("id,name,pinterest_board_id")
+        .eq("user_id", userId)
         .not("pinterest_board_id", "is", null)
         .order("position", { ascending: true });
       return ((data ?? []) as { id: string; name: string }[]).map((c) => ({
@@ -76,7 +80,13 @@ function CreatePinWizard() {
   const { data: storefronts = [] } = useQuery({
     queryKey: ["storefronts"],
     queryFn: async () => {
-      const { data } = await supabase.from("storefronts").select("id,name,slug");
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
+      const { data } = await supabase
+        .from("storefronts")
+        .select("id,name,slug")
+        .eq("user_id", userId);
       return (data ?? []) as Storefront[];
     },
   });
@@ -84,9 +94,13 @@ function CreatePinWizard() {
   const { data: collections = [] } = useQuery({
     queryKey: ["collections"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("collections")
         .select("id,name,slug")
+        .eq("user_id", userId)
         .order("position", { ascending: true });
       return (data ?? []) as Collection[];
     },
@@ -185,7 +199,6 @@ function CreatePinWizard() {
       title="Create pin"
       subtitle={STEP_LABELS[step]}
       backButton
-      hideNotifications
       hideBottomNav
     >
       <input
@@ -710,54 +723,19 @@ function StepProducts({
           <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
             {products
               .filter((p) => manualProductIds.has(p.id))
-              .map((p) => {
-                const isChecked = selectedIds.includes(p.id);
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => toggle(p.id)}
-                    className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate ${
-                      isChecked
-                        ? "border-primary ring-2 ring-primary"
-                        : "border-primary/30 hover:border-primary/60"
-                    }`}
-                  >
-                    <a
-                      href={p.affiliate_url}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      onClick={(e) => e.stopPropagation()}
-                      className="relative aspect-square w-full overflow-hidden bg-primary/10"
-                    >
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.title}
-                          loading="lazy"
-                          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                          <ImageIcon className="h-8 w-8" />
-                        </div>
-                      )}
-                    </a>
-                    {isChecked ? (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                        <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                      </span>
-                    ) : null}
-                    <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                      <div className="min-w-0">
-                        <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                          {p.title}
-                        </h3>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+              .map((p) => (
+                <SuggestionCard
+                  key={p.id}
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                  selected={selectedIds.includes(p.id)}
+                  onToggle={() => toggle(p.id)}
+                />
+              ))}
           </div>
         </div>
       )}
@@ -856,13 +834,15 @@ function StepReview({
           </div>
           <div className="flex gap-3 overflow-x-auto pb-2">
             {products.map((p) => (
-              <div key={p.id} className="w-28 shrink-0">
-                <div className="aspect-square w-full overflow-hidden rounded-xl bg-surface-2 ring-1 ring-border">
-                  {p.image_url && (
-                    <img src={p.image_url} alt="" className="h-full w-full object-cover" />
-                  )}
-                </div>
-                <div className="mt-1 line-clamp-2 text-[11px] font-medium">{p.title}</div>
+              <div key={p.id} className="h-56 w-36 shrink-0">
+                <SuggestionCard
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                />
               </div>
             ))}
           </div>

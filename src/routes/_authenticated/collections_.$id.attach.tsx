@@ -8,14 +8,14 @@ import {
   Wand2,
   Link2,
   Plus,
-  Image as ImageIcon,
   Store,
   ArrowRight,
 } from "lucide-react";
 import { toast } from "sonner";
-import { SuggestionCard } from "@/components/suggestion-card";
+import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
+import { hostBrand } from "@/lib/brands";
 import { visualSearchImage } from "@/lib/pinterest.functions";
 
 export const Route = createFileRoute("/_authenticated/collections_/$id/attach")({
@@ -41,6 +41,8 @@ type ProductRow = {
   image_url: string | null;
   affiliate_url: string;
   collection_id: string | null;
+  price_cents: number | null;
+  commission_pct: number | null;
 };
 
 function AttachToCollectionPage() {
@@ -67,7 +69,7 @@ function AttachToCollectionPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("storefront_products")
-        .select("id,title,image_url,affiliate_url,collection_id")
+        .select("id,title,image_url,affiliate_url,collection_id,price_cents,commission_pct")
         .eq("collection_id", id)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -216,7 +218,6 @@ function AttachToCollectionPage() {
       subtitle="Attach products to this collection"
       backButton
       hideBottomNav
-      hideNotifications
     >
       <div className="mx-auto max-w-2xl space-y-6 pb-32">
         {/* Visual scan preview */}
@@ -353,30 +354,15 @@ function AttachToCollectionPage() {
             </h5>
             <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
               {products.map((p) => (
-                <div
+                <SuggestionCard
                   key={p.id}
-                  className="overflow-hidden rounded-xl border border-border bg-surface"
-                >
-                  <div className="relative aspect-square w-full overflow-hidden bg-primary/10">
-                    {p.image_url ? (
-                      <img
-                        src={p.image_url}
-                        alt={p.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                        <ImageIcon className="h-8 w-8" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-2.5">
-                    <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                      {p.title}
-                    </h3>
-                  </div>
-                </div>
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                />
               ))}
             </div>
           </div>

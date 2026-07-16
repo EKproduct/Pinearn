@@ -141,7 +141,9 @@ export const importPinterestBoards = createServerFn({ method: "POST" })
       const alreadySynced = new Set((existingPins ?? []).map((p) => p.pinterest_pin_id as string));
 
       const newPinRows = pins
-        .filter((p) => !alreadySynced.has(p.id))
+        // This is a creator app — only sync pins the user actually authored,
+        // never pins they saved/repinned from someone else's content.
+        .filter((p) => p.isOwner && !alreadySynced.has(p.id))
         .map((p) => ({
           user_id: userId,
           storefront_id: storefront.id,
@@ -156,6 +158,7 @@ export const importPinterestBoards = createServerFn({ method: "POST" })
           // left it unfinished — see PinDetailDialog in pins.tsx.
           status: "new",
           pinterest_pin_id: p.id,
+          is_owner: true,
           // Preserve the pin's real Pinterest creation time so the pins list
           // (sorted by created_at) reflects actual posting order, not sync order.
           ...(p.createdAt ? { created_at: p.createdAt } : {}),
@@ -271,12 +274,14 @@ export const syncPinterestAnalytics = createServerFn({ method: "POST" })
       .from("pins")
       .select("*", { count: "exact", head: true })
       .eq("user_id", userId)
+      .eq("is_owner", true)
       .not("pinterest_pin_id", "is", null);
 
     const { data: pins, error } = await supabase
       .from("pins")
       .select("id, pinterest_pin_id")
       .eq("user_id", userId)
+      .eq("is_owner", true)
       .not("pinterest_pin_id", "is", null)
       .order("updated_at", { ascending: true }) // least-recently-synced first
       .limit(SYNC_BATCH_SIZE);
@@ -349,6 +354,7 @@ export const getPinterestAnalytics = createServerFn({ method: "POST" })
         .select("id, title, image_url, product_id, pinterest_pin_id, impressions, clicks")
         .eq("user_id", userId)
         .eq("status", "live") // only live pins (real product attached, Go Live hit) belong in pin analytics
+        .eq("is_owner", true)
         .not("pinterest_pin_id", "is", null),
     ]);
     const topByPinterestId = new Map(topPins.map((p) => [p.pinId, p]));
@@ -706,6 +712,7 @@ export const getBoardMonetizationCandidates = createServerFn({ method: "POST" })
       .from("pins")
       .select("id,title,image_url")
       .eq("collection_id", data.collectionId)
+      .eq("is_owner", true)
       .is("product_id", null)
       .order("created_at", { ascending: false });
     if (pErr) throw new Error(pErr.message);

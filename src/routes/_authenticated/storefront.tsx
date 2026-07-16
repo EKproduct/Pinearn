@@ -32,6 +32,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { toast } from "sonner";
 import { importPinterestBoards } from "@/lib/pinterest.functions";
 import { PinterestSyncModal } from "@/components/pinterest-sync-modal";
+import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
+import { hostBrand } from "@/lib/brands";
 
 const DEFAULT_BACKGROUND =
   "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
@@ -183,6 +185,7 @@ function StorefrontPage() {
         .from("pins")
         .select("id,title,image_url,collection_id,external_url,product_id,status")
         .eq("storefront_id", storefront!.id)
+        .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as Pin[];
@@ -466,7 +469,7 @@ function StorefrontPage() {
 
   if (sfLoading) {
     return (
-      <AppShell title="My Store" backButton hideNotifications>
+      <AppShell title="My Store" backButton>
         <SkeletonRows />
       </AppShell>
     );
@@ -474,7 +477,7 @@ function StorefrontPage() {
 
   if (!storefront) {
     return (
-      <AppShell title="My Store" backButton hideNotifications>
+      <AppShell title="My Store" backButton>
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center">
           <p className="text-sm text-muted-foreground">
             Your storefront is being set up. Refresh in a moment.
@@ -492,7 +495,6 @@ function StorefrontPage() {
     <AppShell
       title="My Store"
       backButton
-      hideNotifications
       inlineActions
       actions={
         <Link
@@ -1678,11 +1680,18 @@ function CollectionPinsDialog({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("storefront_products")
-        .select("id,title,image_url,affiliate_url")
+        .select("id,title,image_url,affiliate_url,price_cents,commission_pct")
         .eq("collection_id", collection.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data as { id: string; title: string; image_url: string | null; affiliate_url: string }[];
+      return data as {
+        id: string;
+        title: string;
+        image_url: string | null;
+        affiliate_url: string;
+        price_cents: number | null;
+        commission_pct: number | null;
+      }[];
     },
   });
 
@@ -1716,71 +1725,26 @@ function CollectionPinsDialog({
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {products.map((p) => (
-                <a
+                <SuggestionCard
                   key={`prod-${p.id}`}
-                  href={p.affiliate_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block"
-                >
-                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
-                    <div className="relative aspect-square w-full">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.title}
-                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 grid place-items-center bg-gradient-to-br from-primary/20 to-primary/5 text-primary">
-                          <ExternalLink className="h-6 w-6" />
-                        </div>
-                      )}
-                      <span className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-                        Product
-                      </span>
-                    </div>
-                    <div className="p-2">
-                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
-                    </div>
-                  </div>
-                </a>
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                />
               ))}
-              {pins.map((p) => {
-                const Card = (
-                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
-                    <div className="relative aspect-square w-full">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.title}
-                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                          <ImageIcon className="h-6 w-6" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-2">
-                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
-                    </div>
-                  </div>
-                );
-                return p.external_url ? (
-                  <a
-                    key={p.id}
-                    href={p.external_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block"
-                  >
-                    {Card}
-                  </a>
-                ) : (
-                  <div key={p.id}>{Card}</div>
-                );
-              })}
+              {pins.map((p) => (
+                <SuggestionCard
+                  key={`pin-${p.id}`}
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.external_url ?? "")}
+                  link={p.external_url ?? ""}
+                  price={null}
+                />
+              ))}
             </div>
           )}
         </div>

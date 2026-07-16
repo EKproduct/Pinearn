@@ -24,8 +24,10 @@ import {
   Send,
 } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 import { pickPlaceholderImage } from "@/lib/placeholder-image";
 import { getPinterestAnalytics, syncPinterestAnalytics } from "@/lib/pinterest.functions";
+import { ALL_BRANDS, hostBrand } from "@/lib/brands";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
   component: Analytics,
@@ -96,15 +98,6 @@ function nonCancelled(list: Order[]) {
 }
 
 const ZERO_AGG = { orders: 0, sales: 0, earnings: 0 };
-
-// Every brand row is order-derived, and ORDERS is always empty, so every
-// brand's stats are always zero — no per-brand computation needed.
-const brandAgg = new Map(
-  BRANDS.map((brand) => [
-    brand,
-    { orders: 0, avgOrderValue: 0, productsAttached: 0, earnings: 0, convRate: 0 },
-  ]),
-);
 
 function ordersForProduct(productId: string) {
   return ORDERS.filter((o) => o.productId === productId);
@@ -247,7 +240,7 @@ function Analytics() {
   const activeProduct = PRODUCT_DEFS.find((p) => p.id === activeProductId) ?? null;
 
   return (
-    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings." backButton hideNotifications>
+    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings." backButton>
       {/* Total earnings card */}
       <div className="rounded-3xl border border-border bg-surface p-5">
         <div className="flex items-start justify-between gap-3">
@@ -1005,12 +998,61 @@ function OrderBreakdownDialog({
 const BRAND_SORTS = ["Earnings", "Orders", "Average Order Value", "Products attached", "Conv. rate"] as const;
 type BrandSort = (typeof BRAND_SORTS)[number];
 
+type BrandRow = {
+  brand: string;
+  color: string;
+  initial: string;
+  orders: number;
+  avgOrderValue: number;
+  productsAttached: number;
+  earnings: number;
+  convRate: number;
+};
+
+// Derive a display brand from a real product's affiliate link — match
+// against our known brand catalog (real name/color/logo) when the domain is
+// recognized, otherwise fall back to the bare hostname rather than inventing
+// a brand that isn't there.
+function brandFromUrl(url: string): { name: string; color: string; initial: string } {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    /* keep empty */
+  }
+  const known = ALL_BRANDS.find(
+    (b) => b.domain && (host === b.domain || host.endsWith(`.${b.domain}`)),
+  );
+  if (known) {
+    return { name: known.name, color: known.color, initial: (known.logoText ?? known.name[0]).toUpperCase() };
+  }
+  const name = hostBrand(url);
+  return { name, color: "oklch(0.55 0.02 250)", initial: name[0]?.toUpperCase() ?? "?" };
+}
+
 function BrandsPanel() {
-  const [sort, setSort] = useState<BrandSort>("Earnings");
+  const [sort, setSort] = useState<BrandSort>("Products attached");
+
+  const { data: products = [], isLoading } = useQuery({
+    queryKey: ["analytics-brand-products"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("storefront_products").select("id,affiliate_url");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
   const rows = useMemo(() => {
-    const list = BRANDS.map((brand) => ({ brand, ...brandAgg.get(brand)! }));
-    const key: Record<BrandSort, (r: (typeof list)[number]) => number> = {
+    const byBrand = new Map<string, BrandRow>();
+    for (const p of products) {
+      const { name, color, initial } = brandFromUrl(p.affiliate_url);
+      const key = name.toLowerCase();
+      const existing = byBrand.get(key);
+      if (existing) existing.productsAttached += 1;
+      else byBrand.set(key, { brand: name, color, initial, orders: 0, avgOrderValue: 0, productsAttached: 1, earnings: 0, convRate: 0 });
+    }
+    const list = Array.from(byBrand.values());
+    const key: Record<BrandSort, (r: BrandRow) => number> = {
       Earnings: (r) => r.earnings,
       Orders: (r) => r.orders,
       "Average Order Value": (r) => r.avgOrderValue,
@@ -1018,74 +1060,80 @@ function BrandsPanel() {
       "Conv. rate": (r) => r.convRate,
     };
     return [...list].sort((a, b) => key[sort](b) - key[sort](a));
-  }, [sort]);
-
-  // Brand-level attribution has no real data source — products aren't
-  // tagged to these brands anywhere — so this stays zero like every other
-  // per-brand stat, rather than mixing in an unrelated real count.
-  const totalProductsAttached = 0;
+  }, [products, sort]);
 
   return (
     <div className="mt-6 space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <SimpleStatCard label="Total Brands" value={BRANDS.length.toString()} />
-        <SimpleStatCard label="Total products attached" value={totalProductsAttached.toString()} />
+        <SimpleStatCard label="Total Brands" value={rows.length.toString()} />
+        <SimpleStatCard label="Total products attached" value={products.length.toString()} />
       </div>
 
       <h3 className="font-display text-base font-semibold">All brands you&apos;ve worked with</h3>
 
-      <div>
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sort by</div>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {BRAND_SORTS.map((s) => (
-            <FilterChip key={s} active={sort === s} onClick={() => setSort(s)}>
-              {s}
-            </FilterChip>
+      {isLoading ? (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-28 animate-pulse rounded-2xl border border-border bg-surface-2/60" />
           ))}
         </div>
-      </div>
-
-      <div className="space-y-3">
-        {rows.map((r) => {
-          const info = BRAND_INFO[r.brand];
-          return (
-            <div key={r.brand} className="rounded-2xl border border-border bg-surface p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold text-white"
-                    style={{ background: info.color }}
-                  >
-                    {info.initial}
-                  </div>
-                  <span className="font-semibold">{r.brand}</span>
-                </div>
-                <span className="font-display text-lg font-bold text-emerald-600">₹{fmtINR(r.earnings)}</span>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
-                  <div className="text-sm font-semibold">{r.orders}</div>
-                </div>
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Average Order Value</div>
-                  <div className="text-sm font-semibold">₹{r.avgOrderValue.toLocaleString()}</div>
-                </div>
-              </div>
-              <div className="mt-2 flex gap-2">
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Products attached</div>
-                  <div className="text-sm font-semibold">{r.productsAttached}</div>
-                </div>
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Conv. rate</div>
-                  <div className="text-sm font-semibold">{r.convRate.toFixed(1)}%</div>
-                </div>
-              </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center text-sm text-muted-foreground">
+          No brands worked with yet — attach a product to a pin and it'll show up here.
+        </div>
+      ) : (
+        <>
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sort by</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {BRAND_SORTS.map((s) => (
+                <FilterChip key={s} active={sort === s} onClick={() => setSort(s)}>
+                  {s}
+                </FilterChip>
+              ))}
             </div>
-          );
-        })}
-      </div>
+          </div>
+
+          <div className="space-y-3">
+            {rows.map((r) => (
+              <div key={r.brand} className="rounded-2xl border border-border bg-surface p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold text-white"
+                      style={{ background: r.color }}
+                    >
+                      {r.initial}
+                    </div>
+                    <span className="font-semibold">{r.brand}</span>
+                  </div>
+                  <span className="font-display text-lg font-bold text-emerald-600">₹{fmtINR(r.earnings)}</span>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                    <div className="text-sm font-semibold">{r.orders}</div>
+                  </div>
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Average Order Value</div>
+                    <div className="text-sm font-semibold">₹{r.avgOrderValue.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Products attached</div>
+                    <div className="text-sm font-semibold">{r.productsAttached}</div>
+                  </div>
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Conv. rate</div>
+                    <div className="text-sm font-semibold">{r.convRate.toFixed(1)}%</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -6,7 +6,6 @@ import {
   LogOut,
   Pin,
   Store,
-  Bell,
   Plus,
   Link2,
   Link as LinkIcon,
@@ -39,7 +38,6 @@ export function AppShell({
   inlineActions,
   showBack,
   backButton,
-  hideNotifications,
   greetingName,
   hideBottomNav,
   children,
@@ -50,7 +48,6 @@ export function AppShell({
   inlineActions?: boolean;
   showBack?: boolean;
   backButton?: boolean;
-  hideNotifications?: boolean;
   greetingName?: boolean;
   hideBottomNav?: boolean;
   children: ReactNode;
@@ -199,17 +196,14 @@ export function AppShell({
                 )}
               </div>
               {!hideHeaderActions && (
-                <div className="flex items-center gap-2">
-                  <div
-                    className={
-                      inlineActions
-                        ? "flex items-center gap-2"
-                        : "hidden sm:flex sm:items-center sm:gap-2"
-                    }
-                  >
-                    {actions}
-                  </div>
-                  {!hideNotifications && <NotificationsMenu />}
+                <div
+                  className={
+                    inlineActions
+                      ? "flex items-center gap-2"
+                      : "hidden sm:flex sm:items-center sm:gap-2"
+                  }
+                >
+                  {actions}
                 </div>
               )}
             </div>
@@ -660,152 +654,6 @@ function Avatar({ initials, src, size = 40 }: { initials: string; src?: string; 
       className="grid place-items-center rounded-full bg-gradient-primary text-primary-foreground"
     >
       <span className="font-display text-sm font-bold">{initials}</span>
-    </div>
-  );
-}
-
-/* ---------- Notifications ---------- */
-
-type NotificationItem = {
-  id: string;
-  title: string;
-  body?: string;
-  createdAt: string; // ISO
-  href?: string;
-};
-
-function timeAgo(iso: string) {
-  const d = new Date(iso).getTime();
-  const s = Math.max(1, Math.floor((Date.now() - d) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const days = Math.floor(h / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-function NotificationsMenu() {
-  const [open, setOpen] = useState(false);
-  const [lastSeen, setLastSeen] = useState<number>(() => {
-    if (typeof window === "undefined") return 0;
-    return Number(localStorage.getItem("pinearn.notifLastSeen") ?? 0);
-  });
-  const ref = useRef<HTMLDivElement | null>(null);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-
-  const { data: items = [] } = useQuery<NotificationItem[]>({
-    queryKey: ["notifications"],
-    queryFn: async () => {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user) return [];
-      const { data: pins } = await supabase
-        .from("pins")
-        .select("id,title,created_at")
-        .eq("user_id", u.user.id)
-        .order("created_at", { ascending: false })
-        .limit(10);
-      return (pins ?? []).map((p: any) => ({
-        id: `pin-${p.id}`,
-        title: "New pin created",
-        body: p.title ?? "Untitled pin",
-        createdAt: p.created_at,
-        href: "/pins",
-      }));
-    },
-    refetchOnWindowFocus: false,
-  });
-
-  const unread = items.filter((n) => new Date(n.createdAt).getTime() > lastSeen).length;
-
-  function handleOpen() {
-    setOpen((v) => {
-      const next = !v;
-      if (next) {
-        const now = Date.now();
-        localStorage.setItem("pinearn.notifLastSeen", String(now));
-        setLastSeen(now);
-      }
-      return next;
-    });
-  }
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={handleOpen}
-        className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground"
-        aria-label="Notifications"
-        aria-expanded={open}
-      >
-        <Bell className="h-[18px] w-[18px]" />
-        {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground ring-2 ring-background">
-            {unread > 9 ? "9+" : unread}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-elevate">
-          <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-            <div className="text-sm font-semibold">Notifications</div>
-            <span className="text-[11px] text-muted-foreground">{items.length} recent</span>
-          </div>
-          <div className="max-h-96 overflow-y-auto">
-            {items.length === 0 ? (
-              <div className="px-4 py-10 text-center">
-                <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-surface-2">
-                  <Bell className="h-5 w-5 text-muted-foreground" />
-                </div>
-                <div className="mt-3 text-sm font-medium">You're all caught up</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  New activity will show up here.
-                </div>
-              </div>
-            ) : (
-              items.map((n) => {
-                const isUnread = new Date(n.createdAt).getTime() > lastSeen;
-                return (
-                  <button
-                    key={n.id}
-                    onClick={() => {
-                      setOpen(false);
-                      if (n.href) navigate({ to: n.href });
-                    }}
-                    className="flex w-full items-start gap-3 border-b border-border/40 px-4 py-3 text-left transition last:border-b-0 hover:bg-surface-2"
-                  >
-                    <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
-                      <Pin className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <div className="truncate text-sm font-medium">{n.title}</div>
-                        {isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />}
-                      </div>
-                      {n.body && (
-                        <div className="truncate text-xs text-muted-foreground">{n.body}</div>
-                      )}
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        {timeAgo(n.createdAt)}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

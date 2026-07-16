@@ -43,7 +43,7 @@ function BrandsPage() {
   }, [q, cat, sort]);
 
   return (
-    <AppShell title="Discover" backButton hideNotifications>
+    <AppShell title="Discover" backButton>
       {/* Search + sort */}
       <div className="mt-5 flex items-center gap-2">
         <div className="flex flex-1 items-center gap-2 rounded-full bg-surface-2 px-4 py-2.5 ring-1 ring-border/60">

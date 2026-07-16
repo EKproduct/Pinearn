@@ -1,6 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
-import { ProductCard } from "@/components/product-card";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,7 +9,8 @@ import {
   Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
-import { SuggestionCard, type SuggestionPrice } from "@/components/suggestion-card";
+import { SuggestionCard, realProductPrice, type SuggestionPrice } from "@/components/suggestion-card";
+import { hostBrand } from "@/lib/brands";
 import { goLivePin } from "@/lib/pinterest.functions";
 
 
@@ -177,7 +177,7 @@ function PinPreviewPage() {
 
   if (!pinId) {
     return (
-      <AppShell title="Preview" backButton hideNotifications hideBottomNav>
+      <AppShell title="Preview" backButton hideBottomNav>
         <div className="rounded-2xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
           No pin selected.
         </div>
@@ -190,7 +190,6 @@ function PinPreviewPage() {
       title="Preview"
       subtitle="Choose where this pin should live, then push it live."
       backButton
-      hideNotifications
       hideBottomNav
     >
       {pinLoading || !pin ? (
@@ -221,7 +220,15 @@ function PinPreviewPage() {
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                 {selectedProducts.map((p) => (
-                  <ProductCard key={p.id} product={p} brand={storefront?.name} />
+                  <SuggestionCard
+                    key={p.id}
+                    title={p.title}
+                    thumbnail={p.image_url}
+                    source={storefront?.name ?? hostBrand(p.affiliate_url)}
+                    link={p.affiliate_url}
+                    price={realProductPrice(p.price_cents)}
+                    commissionPct={p.commission_pct}
+                  />
                 ))}
                 {stash.aiPicks.map((a, i) => (
                   <SuggestionCard

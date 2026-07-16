@@ -32,6 +32,7 @@ export const getPublicStorefront = createServerFn({ method: "GET" })
           .select("id,title,image_url,collection_id,product_id")
           .eq("storefront_id", store.id)
           .eq("status", "live")
+          .eq("is_owner", true)
           .order("created_at", { ascending: false })
           .limit(200),
         sb

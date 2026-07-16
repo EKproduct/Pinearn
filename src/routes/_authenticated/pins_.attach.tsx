@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, Link2, Plus, Search, Sparkles, MousePointerClick, X } from "lucide-react";
+import { ChevronLeft, ChevronDown, Check, Link2, Plus, Search, Sparkles, MousePointerClick, X } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
@@ -85,6 +85,7 @@ function AttachPage() {
       const { data, error } = await supabase
         .from("pins")
         .select("*")
+        .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as Pin[];
@@ -94,9 +95,13 @@ function AttachPage() {
   const { data: collections = [] } = useQuery({
     queryKey: ["collections"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("collections")
         .select("id,name,slug")
+        .eq("user_id", userId)
         .order("position", { ascending: true });
       return (data ?? []) as Collection[];
     },
@@ -120,13 +125,17 @@ function AttachPage() {
     for (const c of collections) byId.set(c.id, { collection: c, pins: [] });
     const unassigned: Pin[] = [];
     for (const p of pins) {
+      // Already attached to a product (or published live) — nothing left to pick here.
+      if (p.product_id || p.status === "live") continue;
       if (p.collection_id && byId.has(p.collection_id)) {
         byId.get(p.collection_id)!.pins.push(p);
       } else {
         unassigned.push(p);
       }
     }
-    const list = Array.from(byId.values());
+    // Boards with nothing left to pick (no pins, or every pin already
+    // handled above) are dead ends here — don't list them.
+    const list = Array.from(byId.values()).filter((b) => b.pins.length > 0);
     if (unassigned.length > 0) {
       list.push({
         collection: { id: "__unassigned__", name: "Unassigned", slug: "unassigned" },
@@ -325,39 +334,90 @@ function SearchSortBar({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="flex flex-1 items-center gap-2 rounded-full border border-border bg-surface px-3 py-2">
-        <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <div className="group flex flex-1 items-center gap-2.5 rounded-full bg-surface-2 px-4 py-3 transition focus-within:bg-surface focus-within:ring-2 focus-within:ring-foreground">
+        <Search className="h-[18px] w-[18px] shrink-0 text-foreground/60" strokeWidth={2.4} />
         <input
           type="text"
           value={query}
           onChange={(e) => onQuery(e.target.value)}
           placeholder="Search pins by title…"
-          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+          className="w-full bg-transparent text-sm font-medium outline-none placeholder:text-foreground/45"
         />
         {query && (
           <button
             onClick={() => onQuery("")}
             aria-label="Clear search"
-            className="shrink-0 text-muted-foreground hover:text-foreground"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-foreground/10 text-foreground/70 transition hover:bg-foreground/20"
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="h-3 w-3" />
           </button>
         )}
       </div>
-      <select
-        value={sortBy}
-        onChange={(e) => onSortBy(e.target.value as SortBy)}
-        className="h-[38px] shrink-0 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground focus:border-primary focus:outline-none"
+      <SortDropdown value={sortBy} onChange={onSortBy} />
+    </div>
+  );
+}
+
+function SortDropdown({
+  value,
+  onChange,
+}: {
+  value: SortBy;
+  onChange: (v: SortBy) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) {
+      document.addEventListener("mousedown", onDoc);
+      return () => document.removeEventListener("mousedown", onDoc);
+    }
+  }, [open]);
+
+  const activeLabel = SORT_OPTIONS.find((o) => o.value === value)?.label ?? "Sort by";
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`flex h-[46px] items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-sm font-semibold transition ${
+          value
+            ? "bg-foreground text-background"
+            : "bg-surface-2 text-foreground hover:bg-surface-2/70"
+        }`}
       >
-        <option value="" disabled>
-          Sort by
-        </option>
-        {SORT_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        {activeLabel}
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+8px)] z-20 w-48 overflow-hidden rounded-2xl border border-border bg-surface p-1.5 shadow-elevate">
+          {SORT_OPTIONS.map((o) => {
+            const isActive = o.value === value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-medium transition hover:bg-surface-2 ${
+                  isActive ? "text-primary" : "text-foreground"
+                }`}
+              >
+                {o.label}
+                {isActive && <Check className="h-4 w-4" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -489,7 +549,6 @@ function PinGrid({
     <div className="masonry-3 sm:masonry-4 lg:masonry-4">
       {pins.map((p, i) => {
         const grad = GRADIENTS[i % GRADIENTS.length];
-        const ratio = RATIOS[i % RATIOS.length];
         const selected = selectedId === p.id;
         return (
           <article
@@ -499,14 +558,11 @@ function PinGrid({
               selected ? "ring-2 ring-primary" : "ring-border/60"
             }`}
           >
-            <div className={`relative ${ratio} w-full bg-gradient-to-br ${grad}`}>
+            {/* No forced aspect ratio — each pin renders at its own image's
+                real proportions, like native Pinterest masonry. */}
+            <div className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}>
               {p.image_url && (
-                <img
-                  src={p.image_url}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover"
-                  loading="lazy"
-                />
+                <img src={p.image_url} alt="" className="block w-full h-auto" loading="lazy" />
               )}
               {selected && (
                 <div className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-primary text-primary-foreground shadow-glow">
@@ -515,9 +571,7 @@ function PinGrid({
                   </svg>
                 </div>
               )}
-            </div>
-            <div className="p-3">
-              <h3 className="hidden">{p.title}</h3>
+              <h3 className="sr-only">{p.title}</h3>
             </div>
           </article>
         );

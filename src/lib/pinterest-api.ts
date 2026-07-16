@@ -239,6 +239,11 @@ export type PinterestPin = {
   link: string | null;
   imageUrl: string | null;
   createdAt: string | null;
+  // Pinterest's own "authored by this account" flag — false means this pin
+  // was saved/repinned from someone else's content, not created by the
+  // creator. Confirmed against the real API: is_owner tracks parent_pin_id
+  // exactly (non-null parent_pin_id <=> is_owner === false).
+  isOwner: boolean;
 };
 
 // Pinterest v5 returns `images` as a map keyed by size, e.g. `originals`,
@@ -281,6 +286,7 @@ export async function listBoardPins(accessToken: string, boardId: string): Promi
         link: p.link ?? null,
         imageUrl: largestImage(p.media),
         createdAt: toUtcIso(p.created_at),
+        isOwner: p.is_owner !== false,
       });
     }
     bookmark = data.bookmark || undefined;
@@ -384,6 +390,8 @@ export async function createPin(
     link: data.link ?? null,
     imageUrl: largestImage(data.media),
     createdAt: toUtcIso(data.created_at),
+    // Just published through our own create-pin flow — always owned.
+    isOwner: true,
   };
 }
 

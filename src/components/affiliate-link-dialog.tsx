@@ -12,7 +12,7 @@ export function openAffiliateLinkDialog() {
   window.dispatchEvent(new CustomEvent(OPEN_AFFILIATE_DIALOG_EVENT));
 }
 
-type CreatedProduct = {
+export type CreatedProduct = {
   id: string;
   affiliate_url: string;
   storefront_id: string;
@@ -228,7 +228,7 @@ export function AffiliateLinkDialog() {
   );
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
+export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -277,7 +277,7 @@ type ShareSheetProps = {
   onCreateAnother: () => void;
 };
 
-function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareSheetProps) {
+export function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareSheetProps) {
   const [copied, setCopied] = useState(false);
 
   const encoded = useMemo(() => encodeURIComponent(link), [link]);
@@ -457,7 +457,7 @@ function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareS
   );
 }
 
-function CollectionPicker({
+export function CollectionPicker({
   product,
   onDone,
 }: {

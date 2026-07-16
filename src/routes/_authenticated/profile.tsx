@@ -27,7 +27,10 @@ function ProfilePage() {
   const { data: pinCount } = useQuery({
     queryKey: ["pin-count"],
     queryFn: async () => {
-      const { count } = await supabase.from("pins").select("*", { count: "exact", head: true });
+      const { count } = await supabase
+        .from("pins")
+        .select("*", { count: "exact", head: true })
+        .eq("is_owner", true);
       return count ?? 0;
     },
   });

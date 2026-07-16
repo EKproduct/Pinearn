@@ -11,7 +11,6 @@ import {
   Loader2,
   Pin as PinIcon,
   X,
-  Check,
   Sparkles,
   Wand2,
   Upload,
@@ -22,7 +21,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { visualSearchPin } from "@/lib/pinterest.functions";
-import { SuggestionCard } from "@/components/suggestion-card";
+import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
+import { hostBrand } from "@/lib/brands";
 
 type PinsSearch = { new?: 1; filter?: "drafts" };
 
@@ -113,6 +113,7 @@ function PinsPage() {
       const { data, error } = await supabase
         .from("pins")
         .select("*")
+        .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as Pin[];
@@ -122,9 +123,13 @@ function PinsPage() {
   const { data: collections = [] } = useQuery({
     queryKey: ["collections"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("collections")
         .select("id,name,slug")
+        .eq("user_id", userId)
         .order("position", { ascending: true });
       return (data ?? []) as Collection[];
     },
@@ -184,7 +189,6 @@ function PinsPage() {
       title="Pins"
       subtitle="Browse pins by collection, then match each one to affiliate products."
       backButton
-      hideNotifications
       actions={
         pins.length > 0 &&
         (storefronts.length === 0 ? (
@@ -245,7 +249,6 @@ function PinsPage() {
         <div className="masonry-3 sm:masonry-4 lg:masonry-4">
           {filtered.map((p, i) => {
             const grad = GRADIENTS[i % GRADIENTS.length];
-            const ratio = RATIOS[i % RATIOS.length];
             return (
               <article
                 key={p.id}
@@ -256,14 +259,12 @@ function PinsPage() {
                   p.status === "draft" ? "cursor-pointer" : ""
                 }`}
               >
-                <div className={`relative ${ratio} w-full bg-gradient-to-br ${grad}`}>
+                {/* No forced aspect ratio — each pin renders at its own image's
+                    real proportions, like native Pinterest masonry, instead of
+                    being cropped into a standardized box. */}
+                <div className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}>
                   {p.image_url && (
-                    <img
-                      src={p.image_url}
-                      alt=""
-                      className="absolute inset-0 h-full w-full object-cover"
-                      loading="lazy"
-                    />
+                    <img src={p.image_url} alt="" className="block w-full h-auto" loading="lazy" />
                   )}
                   <span
                     className="absolute right-2 top-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide backdrop-blur"
@@ -279,29 +280,22 @@ function PinsPage() {
                   >
                     {p.status}
                   </span>
-                </div>
-                <div className="p-3">
-                  <h3 className="hidden">{p.title}</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                  <h3 className="sr-only">{p.title}</h3>
+
+                  {/* Icon-only actions, transparent, always visible */}
+                  <div className="absolute inset-x-0 bottom-0 flex justify-end gap-1.5 bg-gradient-to-t from-black/40 to-transparent p-2">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setOpenPinId(p.id);
                       }}
-                      className={
-                        p.status === "draft"
-                          ? "inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-primary px-2 py-2 text-xs font-semibold text-primary-foreground shadow-glow"
-                          : "inline-flex items-center justify-center gap-1.5 rounded-full bg-surface-2 px-2 py-2 text-xs font-semibold text-foreground hover:bg-surface-2/70"
-                      }
+                      aria-label={p.status === "draft" ? "Attach product" : "Edit"}
+                      className="grid h-8 w-8 place-items-center rounded-full bg-transparent text-white transition hover:bg-white/20"
                     >
                       {p.status === "draft" ? (
-                        <>
-                          <Link2 className="h-3.5 w-3.5" /> Attach product
-                        </>
+                        <Link2 className="h-3.5 w-3.5" />
                       ) : (
-                        <>
-                          <Pencil className="h-3.5 w-3.5" /> Edit
-                        </>
+                        <Pencil className="h-3.5 w-3.5" />
                       )}
                     </button>
                     <button
@@ -309,9 +303,10 @@ function PinsPage() {
                         e.stopPropagation();
                         if (confirm(`Delete "${p.title}"?`)) remove.mutate(p.id);
                       }}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-full bg-destructive/10 px-2 py-2 text-xs font-semibold text-destructive hover:bg-destructive/15"
+                      aria-label="Delete"
+                      className="grid h-8 w-8 place-items-center rounded-full bg-transparent text-white transition hover:bg-white/20 hover:text-red-300"
                     >
-                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
@@ -744,61 +739,26 @@ export function PinDetailDialog({
               <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                 {storeProducts
                   .filter((p) => manualProductIds.has(p.id))
-                  .map((p) => {
-                    const isChecked = checked.has(p.id);
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() =>
-                          setChecked((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(p.id)) next.delete(p.id);
-                            else next.add(p.id);
-                            return next;
-                          })
-                        }
-                        className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate ${
-                          isChecked
-                            ? "border-primary ring-2 ring-primary"
-                            : "border-primary/30 hover:border-primary/60"
-                        }`}
-                      >
-                        <div
-                          className="relative aspect-square w-full cursor-pointer overflow-hidden bg-primary/10"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(p.affiliate_url, "_blank", "noopener,noreferrer");
-                          }}
-                        >
-                          {p.image_url ? (
-                            <img
-                              src={p.image_url}
-                              alt={p.title}
-                              loading="lazy"
-                              className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                            />
-                          ) : (
-                            <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                              <ImageIcon className="h-8 w-8" />
-                            </div>
-                          )}
-                        </div>
-                        {isChecked && (
-                          <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                            <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                          </span>
-                        )}
-                        <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                          <div className="min-w-0">
-                            <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                              {p.title}
-                            </h3>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
+                  .map((p) => (
+                    <SuggestionCard
+                      key={p.id}
+                      title={p.title}
+                      thumbnail={p.image_url}
+                      source={hostBrand(p.affiliate_url)}
+                      link={p.affiliate_url}
+                      price={realProductPrice(p.price_cents)}
+                      commissionPct={p.commission_pct}
+                      selected={checked.has(p.id)}
+                      onToggle={() =>
+                        setChecked((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(p.id)) next.delete(p.id);
+                          else next.add(p.id);
+                          return next;
+                        })
+                      }
+                    />
+                  ))}
               </div>
             </div>
           )}

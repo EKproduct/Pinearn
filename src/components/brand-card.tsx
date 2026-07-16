@@ -37,7 +37,7 @@ export function BrandCard({ brand }: { brand: Brand }) {
     <Link
       to="/brands/$brandId"
       params={{ brandId: brand.id }}
-      className="group flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-2xl border border-border bg-surface p-2.5 text-center transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevate"
+      className="group flex h-full w-full snap-start flex-col items-center justify-center gap-1.5 rounded-2xl border border-border bg-surface p-2.5 text-center transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevate"
     >
       <BrandLogo brand={brand} size={44} />
       <div className="mt-0.5 text-[10px] font-semibold text-primary">
@@ -51,7 +51,7 @@ function ViewAllCard() {
   return (
     <Link
       to="/brands"
-      className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-2xl border border-border bg-surface p-2.5 text-center transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevate"
+      className="flex h-full w-full snap-start flex-col items-center justify-center gap-1.5 rounded-2xl border border-border bg-surface p-2.5 text-center transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevate"
     >
       <div className="grid h-11 w-11 place-items-center rounded-full bg-primary/10 text-primary">
         <ArrowRight className="h-5 w-5" />
@@ -73,7 +73,7 @@ export function BrandsSection({ brands }: { brands: Brand[] }) {
           View all
         </Link>
       </div>
-      <div className="no-scrollbar -mx-4 overflow-x-auto px-4 pb-2 sm:-mx-6 sm:px-6 md:-mx-10 md:px-10">
+      <div className="no-scrollbar -mx-4 snap-x snap-mandatory overflow-x-auto px-4 pb-2 sm:-mx-6 sm:px-6 md:-mx-10 md:px-10">
         <div
           className="grid grid-flow-col grid-rows-2 gap-2.5"
           style={{ gridAutoColumns: "5rem" }}

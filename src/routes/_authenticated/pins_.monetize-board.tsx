@@ -6,10 +6,9 @@ import { motion, useMotionValue, useTransform, animate as animateMotionValue } f
 import { toast } from "sonner";
 import {
   AlertTriangle,
-  Check,
   CheckCheck,
+  ChevronRight,
   Heart,
-  Image as ImageIcon,
   Link2,
   Loader2,
   Plus,
@@ -23,6 +22,7 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { SuggestionCard } from "@/components/suggestion-card";
 import { supabase } from "@/integrations/supabase/client";
+import { hostBrand } from "@/lib/brands";
 import {
   approveBoardPins,
   getBoardMonetizationCandidates,
@@ -80,6 +80,7 @@ function MonetizeBoardPage() {
   const [approvedCount, setApprovedCount] = useState(0);
   const [approvingAll, setApprovingAll] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
+  const [introDismissed, setIntroDismissed] = useState(false);
   const [manualDraft, setManualDraft] = useState<ManualDraft>({ pasteUrl: "", products: [] });
   const cardApiRef = useRef<CardApi | null>(null);
 
@@ -107,7 +108,10 @@ function MonetizeBoardPage() {
   // both just mean there's nothing to auto-fill, so the manual fields show
   // either way instead of a dead-end error screen.
   const currentRecommendation: VisualMatch | null = currentRecQuery?.data?.recommendation ?? null;
-  const [approveAllProgress, setApproveAllProgress] = useState<{ done: number; total: number } | null>(null);
+  const [approveAllProgress, setApproveAllProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!confirmAll) return;
@@ -147,7 +151,10 @@ function MonetizeBoardPage() {
           action: {
             label: "Undo",
             onClick: async () => {
-              const { error } = await supabase.from("pins").update({ status: "draft" }).eq("id", candidate.pinId);
+              const { error } = await supabase
+                .from("pins")
+                .update({ status: "draft" })
+                .eq("id", candidate.pinId);
               if (error) {
                 toast.error("Failed to undo: " + error.message);
                 return;
@@ -236,9 +243,8 @@ function MonetizeBoardPage() {
     setApprovingAll(true);
     setApproveAllProgress({ done: 0, total: targets.length });
     try {
-      const resolved: Array<{ candidate: BoardCandidate; recommendation: VisualMatch | null }> = new Array(
-        targets.length,
-      );
+      const resolved: Array<{ candidate: BoardCandidate; recommendation: VisualMatch | null }> =
+        new Array(targets.length);
       let nextIndex = 0;
       let doneCount = 0;
       const CONCURRENCY = 4;
@@ -288,10 +294,14 @@ function MonetizeBoardPage() {
 
       const unmatched = targets.length - matched.length;
       if (unmatched > 0) {
-        toast(`${unmatched} pin${unmatched === 1 ? "" : "s"} had no match — reopen this board to tag them manually.`);
+        toast(
+          `${unmatched} pin${unmatched === 1 ? "" : "s"} had no match — reopen this board to tag them manually.`,
+        );
       }
       if (failed.length > 0) {
-        toast.error(`${failed.length} pin${failed.length === 1 ? "" : "s"} failed — reopen this board to retry them.`);
+        toast.error(
+          `${failed.length} pin${failed.length === 1 ? "" : "s"} failed — reopen this board to retry them.`,
+        );
       }
       if (approved > 0) {
         toast.success(`${approved} pin${approved === 1 ? "" : "s"} approved`, {
@@ -301,7 +311,10 @@ function MonetizeBoardPage() {
               const { error } = await supabase
                 .from("pins")
                 .update({ status: "draft" })
-                .in("id", matched.map((r) => r.candidate.pinId));
+                .in(
+                  "id",
+                  matched.map((r) => r.candidate.pinId),
+                );
               if (error) {
                 toast.error("Failed to undo: " + error.message);
                 return;
@@ -324,7 +337,7 @@ function MonetizeBoardPage() {
 
   if (!collectionId) {
     return (
-      <AppShell title="Monetise board" backButton hideBottomNav hideNotifications>
+      <AppShell title="Monetise board" backButton hideBottomNav>
         <div className="rounded-2xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
           No board selected.
         </div>
@@ -333,7 +346,7 @@ function MonetizeBoardPage() {
   }
 
   return (
-    <AppShell title="Monetise board" subtitle={boardName || undefined} backButton hideBottomNav hideNotifications>
+    <AppShell title="Monetise board" subtitle={boardName || undefined} backButton hideBottomNav>
       {isError ? (
         <div className="rounded-2xl border border-dashed border-rose-300 bg-rose-50/50 p-10 text-center text-sm text-rose-700">
           <p>Couldn't load this board's pins.</p>
@@ -342,14 +355,25 @@ function MonetizeBoardPage() {
             disabled={isFetching}
             className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-rose-600 px-4 py-2 text-sm font-medium text-white transition disabled:opacity-60"
           >
-            {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {isFetching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
             Try again
           </button>
         </div>
+      ) : !introDismissed && (isLoading || total > 0) ? (
+        <ReviewIntro
+          boardName={boardName}
+          loading={isLoading}
+          total={total}
+          onStart={() => setIntroDismissed(true)}
+        />
       ) : isLoading ? (
         <div className="mx-auto max-w-sm">
           <div className="mb-4 h-2 w-full animate-pulse rounded-full bg-surface-2" />
-          <div className="aspect-[4/5] w-full animate-pulse rounded-3xl border border-border bg-surface-2" />
+          <div className="aspect-[4/3] w-full animate-pulse rounded-3xl border border-border bg-surface-2" />
         </div>
       ) : candidates.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center text-sm text-muted-foreground">
@@ -378,16 +402,25 @@ function MonetizeBoardPage() {
           </button>
         </div>
       ) : (
-        <div className="mx-auto max-w-sm pb-32">
-          <div className="mb-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-            <div
-              className="h-full rounded-full bg-gradient-primary transition-all duration-300"
-              style={{ width: `${total > 0 ? (cursor / total) * 100 : 0}%` }}
-            />
+        <div className="mx-auto max-w-sm pb-36">
+          <div className="mb-5 flex items-center justify-center">
+            <div className="relative inline-flex items-center gap-2 overflow-hidden rounded-full border border-border bg-surface py-1 pl-1 pr-4 shadow-sm">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-primary/10 transition-all duration-300"
+                style={{ width: `${total > 0 ? Math.max((cursor / total) * 100, 10) : 0}%` }}
+              />
+              <span className="relative z-10 grid h-7 min-w-7 place-items-center rounded-full bg-foreground px-2 text-[11px] font-bold tabular-nums text-background">
+                {cursor}/{total}
+              </span>
+              <span className="relative z-10 text-xs font-medium text-muted-foreground">
+                reviewed
+              </span>
+              <span className="relative z-10 h-1 w-1 rounded-full bg-muted-foreground/40" />
+              <span className="relative z-10 text-xs font-semibold text-emerald-600">
+                {approvedCount} approved
+              </span>
+            </div>
           </div>
-          <p className="mb-4 text-center text-xs font-medium text-muted-foreground">
-            {cursor} of {total} reviewed · {approvedCount} approved
-          </p>
 
           {/* Height is driven by the current (in-flow) card, not a fixed
               box, so nothing is ever clipped — the page just scrolls. */}
@@ -395,7 +428,7 @@ function MonetizeBoardPage() {
             {upNext.map((c, i) => (
               <div
                 key={c.pinId}
-                className="absolute inset-x-0 top-0 aspect-[4/5] overflow-hidden rounded-3xl border border-border bg-surface shadow-sm"
+                className="absolute inset-x-0 top-0 aspect-[4/3] overflow-hidden rounded-3xl border border-border bg-surface shadow-sm"
                 style={{
                   transform: `scale(${1 - (i + 1) * 0.04}) translateY(${(i + 1) * 10}px)`,
                   zIndex: 10 - i,
@@ -404,7 +437,11 @@ function MonetizeBoardPage() {
               >
                 <div className="relative h-full w-full bg-gradient-to-br from-rose-500 to-pink-600">
                   {c.imageUrl && (
-                    <img src={c.imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                    <img
+                      src={c.imageUrl}
+                      alt=""
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
                   )}
                 </div>
               </div>
@@ -431,60 +468,94 @@ function MonetizeBoardPage() {
           </div>
 
           {current && !currentRecLoading && (
-            <div className="mt-5 flex items-center justify-center gap-5">
-              <button
-                onClick={handleRejectClick}
-                aria-label="Reject this pin"
-                className="grid h-14 w-14 place-items-center rounded-full border border-border bg-surface text-muted-foreground shadow-sm transition hover:border-rose-300 hover:text-rose-500 active:scale-95"
-              >
-                <X className="h-6 w-6" />
-              </button>
-              <button
-                onClick={handleApproveClick}
-                aria-label="Approve this pin"
-                disabled={pendingIds.has(current.pinId)}
-                className="grid h-16 w-16 place-items-center rounded-full bg-gradient-primary text-primary-foreground shadow-glow transition active:scale-95 disabled:opacity-60"
-              >
-                {pendingIds.has(current.pinId) ? (
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                ) : (
-                  <Heart className="h-6 w-6" />
-                )}
-              </button>
+            <div className="mt-5 flex items-center justify-center gap-9">
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  onClick={handleRejectClick}
+                  aria-label="Reject this pin"
+                  className="grid h-16 w-16 place-items-center rounded-full border-2 border-border bg-surface text-muted-foreground shadow-sm transition hover:border-rose-300 hover:text-rose-500 active:scale-90"
+                >
+                  <X className="h-7 w-7" strokeWidth={2.5} />
+                </button>
+                <span className="text-[11px] font-semibold text-muted-foreground">Skip</span>
+              </div>
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  onClick={handleApproveClick}
+                  aria-label="Approve this pin"
+                  disabled={pendingIds.has(current.pinId)}
+                  className="grid h-[72px] w-[72px] place-items-center rounded-full bg-gradient-primary text-primary-foreground shadow-glow transition active:scale-90 disabled:opacity-60"
+                >
+                  {pendingIds.has(current.pinId) ? (
+                    <Loader2 className="h-7 w-7 animate-spin" />
+                  ) : (
+                    <Heart className="h-7 w-7" fill="currentColor" />
+                  )}
+                </button>
+                <span className="text-[11px] font-semibold text-primary">Approve</span>
+              </div>
             </div>
           )}
 
           <div
-            className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 px-4 py-3 backdrop-blur-xl"
+            className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 px-4 pt-3 backdrop-blur-xl"
             style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
           >
-            <div className="mx-auto flex max-w-sm items-center gap-3">
+            <div className="mx-auto max-w-sm">
               <button
                 onClick={handleApproveAllClick}
                 disabled={approvingAll || remaining.length === 0}
-                className={`inline-flex w-full items-center justify-center gap-1.5 rounded-xl border px-4 py-3 text-sm font-semibold transition active:scale-[0.98] disabled:opacity-50 ${
+                className={`flex w-full items-center gap-3 rounded-2xl border-2 p-3.5 text-left shadow-elevate transition active:scale-[0.98] disabled:opacity-60 ${
                   confirmAll
-                    ? "border-amber-400 bg-amber-400/15 text-amber-600"
-                    : "border-primary/30 bg-primary/10 text-primary"
+                    ? "border-amber-400 bg-amber-400/15"
+                    : "border-transparent bg-gradient-primary"
                 }`}
               >
-                {approvingAll ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {approveAllProgress
-                      ? `Matching products… ${approveAllProgress.done}/${approveAllProgress.total}`
-                      : "Approving…"}
-                  </>
-                ) : confirmAll ? (
-                  <>
-                    <AlertTriangle className="h-4 w-4" />
-                    {`Tap again to approve ${remaining.length} pin${remaining.length === 1 ? "" : "s"}`}
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-4 w-4" />
-                    {`Approve all remaining (${remaining.length})`}
-                  </>
+                <span
+                  className={`grid h-12 w-12 shrink-0 place-items-center rounded-full ${
+                    confirmAll
+                      ? "bg-amber-400/25 text-amber-600"
+                      : "bg-white/20 text-primary-foreground"
+                  }`}
+                >
+                  {approvingAll ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : confirmAll ? (
+                    <AlertTriangle className="h-6 w-6" />
+                  ) : (
+                    <Sparkles className="h-6 w-6" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    className={`block text-[15px] font-bold leading-tight ${
+                      confirmAll ? "text-amber-700" : "text-primary-foreground"
+                    }`}
+                  >
+                    {approvingAll
+                      ? "Approving…"
+                      : confirmAll
+                        ? "Tap again to confirm"
+                        : "Approve all remaining"}
+                  </span>
+                  <span
+                    className={`mt-0.5 block truncate text-xs ${
+                      confirmAll ? "text-amber-700/80" : "text-primary-foreground/80"
+                    }`}
+                  >
+                    {approvingAll
+                      ? approveAllProgress
+                        ? `Matching products… ${approveAllProgress.done}/${approveAllProgress.total}`
+                        : "Hang tight…"
+                      : confirmAll
+                        ? `This will auto-match ${remaining.length} pin${remaining.length === 1 ? "" : "s"} — no going back`
+                        : `AI matches products for all ${remaining.length} remaining pin${remaining.length === 1 ? "" : "s"} instantly`}
+                  </span>
+                </span>
+                {!approvingAll && (
+                  <ChevronRight
+                    className={`h-5 w-5 shrink-0 ${confirmAll ? "text-amber-600" : "text-primary-foreground/80"}`}
+                  />
                 )}
               </button>
             </div>
@@ -567,7 +638,12 @@ function DraggableCard({
       pasteUrl: "",
       products: [
         ...manualDraft.products,
-        { id: crypto.randomUUID(), title: deriveManualTitle(candidate.title, url), url, selected: true },
+        {
+          id: crypto.randomUUID(),
+          title: deriveManualTitle(candidate.title, url),
+          url,
+          selected: true,
+        },
       ],
     });
   };
@@ -575,7 +651,9 @@ function DraggableCard({
   const toggleManualProduct = (id: string) => {
     onManualDraft({
       ...manualDraft,
-      products: manualDraft.products.map((p) => (p.id === id ? { ...p, selected: !p.selected } : p)),
+      products: manualDraft.products.map((p) =>
+        p.id === id ? { ...p, selected: !p.selected } : p,
+      ),
     });
   };
 
@@ -612,7 +690,7 @@ function DraggableCard({
         </>
       )}
 
-      <div className="relative aspect-[4/5] w-full bg-gradient-to-br from-rose-500 to-pink-600">
+      <div className="relative aspect-[4/3] w-full bg-gradient-to-br from-rose-500 to-pink-600">
         {candidate.imageUrl && (
           <img
             src={candidate.imageUrl}
@@ -650,7 +728,9 @@ function DraggableCard({
               />
             </div>
             {linkHost && (
-              <p className="mt-2 truncate text-center text-[11px] text-muted-foreground">Links to {linkHost}</p>
+              <p className="mt-2 truncate text-center text-[11px] text-muted-foreground">
+                Links to {linkHost}
+              </p>
             )}
           </>
         ) : (
@@ -721,30 +801,16 @@ function DraggableCard({
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                   {manualDraft.products.map((p) => (
-                    <button
+                    <SuggestionCard
                       key={p.id}
-                      type="button"
-                      onClick={() => toggleManualProduct(p.id)}
-                      className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate ${
-                        p.selected ? "border-primary ring-2 ring-primary" : "border-primary/30 hover:border-primary/60"
-                      }`}
-                    >
-                      <div className="relative aspect-square w-full overflow-hidden bg-primary/10">
-                        <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                          <ImageIcon className="h-8 w-8" />
-                        </div>
-                      </div>
-                      {p.selected && (
-                        <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                          <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                        </span>
-                      )}
-                      <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                        <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                          {p.title}
-                        </h3>
-                      </div>
-                    </button>
+                      title={p.title}
+                      thumbnail={null}
+                      source={hostBrand(p.url)}
+                      link={p.url}
+                      price={null}
+                      selected={p.selected}
+                      onToggle={() => toggleManualProduct(p.id)}
+                    />
                   ))}
                 </div>
               </div>
@@ -753,5 +819,102 @@ function DraggableCard({
         )}
       </div>
     </motion.div>
+  );
+}
+
+// Shown once per board before the swipe deck — doubles as the loading
+// screen (staying up while candidates fetch) and a mini tutorial, so the
+// wait never feels dead and nobody hits the deck unsure what X / heart /
+// "approve all" actually do.
+function ReviewIntro({
+  boardName,
+  loading,
+  total,
+  onStart,
+}: {
+  boardName: string;
+  loading: boolean;
+  total: number;
+  onStart: () => void;
+}) {
+  return (
+    <div className="mx-auto flex min-h-[65vh] max-w-sm flex-col justify-center">
+      <div className="rounded-3xl border border-border bg-surface p-6 shadow-elevate sm:p-8">
+        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-primary text-primary-foreground shadow-glow">
+          <Wand2 className="h-7 w-7" />
+        </div>
+        <h2 className="mt-4 text-center font-display text-xl font-bold tracking-tight">
+          Let's monetise{boardName ? ` "${boardName}"` : " this board"}
+        </h2>
+        <p className="mt-1.5 text-center text-sm text-muted-foreground">
+          You'll go through each pin one by one. For every pin, you decide what happens next.
+        </p>
+
+        <div className="mt-6 space-y-2.5">
+          <IntroRow
+            tone="rose"
+            icon={<X className="h-5 w-5" strokeWidth={2.5} />}
+            title="Reject"
+            desc="Skip this pin — no product gets attached."
+          />
+          <IntroRow
+            tone="primary"
+            icon={<Heart className="h-5 w-5" fill="currentColor" />}
+            title="Approve"
+            desc="Attach the matched product and move to the next pin."
+          />
+          <IntroRow
+            tone="gradient"
+            icon={<Sparkles className="h-5 w-5" />}
+            title="Approve all remaining"
+            desc="Too many to review? Let AI auto-match every pin left, instantly."
+          />
+        </div>
+
+        <button
+          onClick={onStart}
+          disabled={loading}
+          className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-primary px-4 py-4 text-[15px] font-bold text-primary-foreground shadow-glow transition active:scale-[0.98] disabled:opacity-70"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="h-5 w-5 animate-spin" /> Loading pins…
+            </>
+          ) : (
+            <>Start reviewing{total > 0 ? ` · ${total} pin${total === 1 ? "" : "s"}` : ""}</>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function IntroRow({
+  tone,
+  icon,
+  title,
+  desc,
+}: {
+  tone: "rose" | "primary" | "gradient";
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+}) {
+  const toneClass =
+    tone === "rose"
+      ? "bg-rose-500/10 text-rose-500"
+      : tone === "primary"
+        ? "bg-primary/10 text-primary"
+        : "bg-gradient-primary text-primary-foreground shadow-glow";
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-border/60 bg-surface-2/40 p-3">
+      <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${toneClass}`}>
+        {icon}
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <p className="text-sm font-semibold">{title}</p>
+        <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{desc}</p>
+      </div>
+    </div>
   );
 }

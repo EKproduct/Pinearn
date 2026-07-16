@@ -1,7 +1,16 @@
 import { Check, Image as ImageIcon, Loader2 } from "lucide-react";
-import { estimateEarning } from "@/lib/brands";
+import { estimateCommissionPct } from "@/lib/brands";
 
 export type SuggestionPrice = { value: string; extractedValue: number; currency: string } | null;
+
+// Converts a stored product's real price (cents) into the same shape a
+// visual-search match uses, so every product card in the app — real or
+// AI-suggested — can render through this one component.
+export function realProductPrice(priceCents: number | null | undefined): SuggestionPrice {
+  if (priceCents == null) return null;
+  const amount = priceCents / 100;
+  return { value: `₹${amount.toLocaleString("en-IN")}`, extractedValue: amount, currency: "₹" };
+}
 
 // Real price has no separate "MRP" from the visual-search API (just one
 // selling price) — synthesize a plausible struck-through MRP the same way
@@ -18,11 +27,12 @@ function formatMoney(n: number, currency: string) {
 }
 
 /**
- * The one product card used everywhere a visual-search match is shown
- * (attach-to-pin, create-pin, attach-to-collection, go-live preview) —
- * picture, brand, struck-through MRP + real price, discount badge, and a
- * bright-green real earnings estimate. Pass `onToggle` for an interactive
- * pick/select card; omit it for a static display-only card (preview page).
+ * The one product card used everywhere a product is shown anywhere in the
+ * app — a visual-search match or a real stored product (attach-to-pin,
+ * create-pin, attach-to-collection, go-live preview, storefront) — picture,
+ * brand, struck-through MRP + real price, discount badge, and a bright-green
+ * earnings pill. Pass `onToggle` for an interactive pick/select card; omit it
+ * for a static display-only card.
  */
 export function SuggestionCard({
   title,
@@ -33,6 +43,7 @@ export function SuggestionCard({
   selected,
   pending,
   onToggle,
+  commissionPct,
 }: {
   title: string;
   thumbnail: string | null;
@@ -42,8 +53,13 @@ export function SuggestionCard({
   selected?: boolean;
   pending?: boolean;
   onToggle?: () => void;
+  // Pass the product's real stored commission rate when known (an actual
+  // product) — omit it to fall back to the retailer-name estimate (an
+  // AI visual-search match, which has no real commission on file yet).
+  commissionPct?: number | null;
 }) {
-  const earning = price ? estimateEarning(source, price.extractedValue) : null;
+  const pct = commissionPct ?? estimateCommissionPct(source);
+  const earning = price ? Math.round(price.extractedValue * (pct / 100)) : null;
   const mrp = price ? computeMrp(price.extractedValue) : null;
   const hasDiscount = !!(price && mrp && mrp > price.extractedValue);
   const discountPct = hasDiscount ? Math.round((1 - price!.extractedValue / mrp!) * 100) : null;

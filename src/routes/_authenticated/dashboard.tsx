@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { AppShell } from "@/components/app-shell";
+import { NewUserCta } from "@/components/new-user-cta";
 import { BrandsSection } from "@/components/brand-card";
 import { BEST_SELLING_BRANDS } from "@/lib/brands";
 import { openAffiliateLinkDialog } from "@/components/affiliate-link-dialog";
@@ -22,7 +23,6 @@ import {
   ArrowRight,
   Eye,
   Sparkles,
-  LayoutGrid,
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -60,14 +60,28 @@ const SLIDES = [
     cta: { label: "Open storefront", to: "/storefront" as const },
     gradient: "from-pink-50 via-rose-100 to-orange-100",
   },
+  {
+    icon: Sparkles,
+    title: "Monetise your boards in one click",
+    body: "Pick a board, swipe through AI-matched products for every pin, and go live in seconds.",
+    cta: { label: "Monetise a board", to: "/pins/attach" as const, search: { intent: "monetize" as const } },
+    gradient: "from-fuchsia-50 via-rose-100 to-orange-50",
+  },
 ] as const;
 
 function FeatureCarousel() {
   const [idx, setIdx] = useState(0);
+  // Bumped whenever the user manually navigates, so the auto-advance timer
+  // restarts from a fresh 5s instead of firing right after their pick.
+  const [autoTick, setAutoTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setIdx((i) => (i + 1) % SLIDES.length), 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [autoTick]);
+  const goTo = (next: number) => {
+    setIdx(next);
+    setAutoTick((n) => n + 1);
+  };
   const s = SLIDES[idx];
   const Icon = s.icon;
   return (
@@ -82,6 +96,7 @@ function FeatureCarousel() {
             {"to" in s.cta ? (
               <Link
                 to={s.cta.to}
+                search={"search" in s.cta ? s.cta.search : undefined}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
               >
                 {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
@@ -104,7 +119,7 @@ function FeatureCarousel() {
 
         <div className="mt-4 flex items-center gap-3">
           <button
-            onClick={() => setIdx((i) => (i - 1 + SLIDES.length) % SLIDES.length)}
+            onClick={() => goTo((idx - 1 + SLIDES.length) % SLIDES.length)}
             className="grid h-8 w-8 place-items-center rounded-full bg-white/80 text-foreground/70 shadow-sm transition hover:bg-white"
             aria-label="Previous"
           >
@@ -114,7 +129,7 @@ function FeatureCarousel() {
             {SLIDES.map((_, i) => (
               <button
                 key={i}
-                onClick={() => setIdx(i)}
+                onClick={() => goTo(i)}
                 aria-label={`Slide ${i + 1}`}
                 className={`h-1 rounded-full transition-all ${
                   i === idx ? "w-4 bg-primary" : "w-1 bg-foreground/20"
@@ -123,7 +138,7 @@ function FeatureCarousel() {
             ))}
           </div>
           <button
-            onClick={() => setIdx((i) => (i + 1) % SLIDES.length)}
+            onClick={() => goTo((idx + 1) % SLIDES.length)}
             className="grid h-8 w-8 place-items-center rounded-full bg-white/80 text-foreground/70 shadow-sm transition hover:bg-white"
             aria-label="Next"
           >
@@ -138,6 +153,8 @@ function FeatureCarousel() {
 function Dashboard() {
   return (
     <AppShell title="Dashboard" subtitle="Your monetization at a glance." greetingName>
+      <NewUserCta />
+
       {/* Feature carousel */}
       <FeatureCarousel />
 
@@ -176,6 +193,7 @@ function MonetizePins() {
       const { data } = await supabase
         .from("pins")
         .select("id, title, image_url, impressions, clicks")
+        .eq("is_owner", true)
         .is("product_id", null)
         .order("created_at", { ascending: false });
       return data ?? [];
@@ -222,26 +240,26 @@ function MonetizePins() {
             {isLoading ? "Loading…" : `${pins.length} pin${pins.length === 1 ? "" : "s"} getting views with nothing to sell yet`}
           </p>
         </div>
-        <Link to="/pins" className="shrink-0 text-xs font-medium text-primary hover:underline">
+        <Link to="/pins/attach" className="shrink-0 text-xs font-medium text-primary hover:underline">
           View all
         </Link>
       </div>
 
       {isLoading ? (
-        <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <div className="no-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
           {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
-              className="h-52 w-32 shrink-0 animate-pulse rounded-2xl border border-border bg-surface-2 sm:w-36"
+              className="h-52 w-32 shrink-0 snap-start animate-pulse rounded-2xl border border-border bg-surface-2 sm:w-36"
             />
           ))}
         </div>
       ) : (
-        <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+        <div className="no-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
           {visiblePins.map((p) => (
             <div
               key={p.id}
-              className="group relative h-52 w-32 shrink-0 overflow-hidden rounded-2xl shadow-sm ring-1 ring-border/60 transition hover:-translate-y-0.5 hover:shadow-elevate sm:w-36"
+              className="group relative h-52 w-32 shrink-0 snap-start overflow-hidden rounded-2xl shadow-sm ring-1 ring-border/60 transition hover:-translate-y-0.5 hover:shadow-elevate sm:w-36"
             >
               {p.image_url ? (
                 <img
@@ -276,8 +294,8 @@ function MonetizePins() {
           ))}
           {hasMore && (
             <Link
-              to="/pins"
-              className="flex h-52 w-24 shrink-0 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface-2/40 text-center transition hover:border-primary/40 hover:bg-surface-2 sm:w-28"
+              to="/pins/attach"
+              className="flex h-52 w-24 shrink-0 snap-start flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface-2/40 text-center transition hover:border-primary/40 hover:bg-surface-2 sm:w-28"
             >
               <span className="grid h-9 w-9 place-items-center rounded-full bg-surface text-primary shadow-sm">
                 <ArrowRight className="h-4 w-4" />
@@ -303,9 +321,13 @@ function MonetizeBoards() {
   const { data: collections = [], isLoading: collectionsLoading } = useQuery({
     queryKey: ["dashboard-boards-collections"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("collections")
         .select("id,name,slug")
+        .eq("user_id", userId)
         .order("position", { ascending: true });
       return (data ?? []) as { id: string; name: string; slug: string }[];
     },
@@ -314,7 +336,10 @@ function MonetizeBoards() {
   const { data: pins = [], isLoading: pinsLoading } = useQuery({
     queryKey: ["dashboard-boards-pins"],
     queryFn: async () => {
-      const { data } = await supabase.from("pins").select("id, collection_id, image_url, product_id");
+      const { data } = await supabase
+        .from("pins")
+        .select("id, collection_id, image_url, product_id")
+        .eq("is_owner", true);
       return data ?? [];
     },
   });
@@ -323,13 +348,14 @@ function MonetizeBoards() {
 
   const boards = useMemo(() => {
     const byId = new Map(
-      collections.map((c) => [c.id, { collection: c, cover: null as string | null, total: 0, unmonetized: 0 }]),
+      collections.map((c) => [c.id, { collection: c, images: [] as string[], total: 0, unmonetized: 0 }]),
     );
     for (const p of pins) {
       const b = p.collection_id ? byId.get(p.collection_id) : undefined;
       if (!b) continue;
       b.total += 1;
-      if (!b.cover && p.image_url) b.cover = p.image_url;
+      // Cover + two side thumbnails — same collage a real Pinterest board cover uses.
+      if (p.image_url && b.images.length < 3) b.images.push(p.image_url);
       if (!p.product_id) b.unmonetized += 1;
     }
     return Array.from(byId.values())
@@ -348,7 +374,7 @@ function MonetizeBoards() {
     <div className="mt-8">
       <div className="mb-4 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-display text-lg font-semibold">Monetise your boards</h2>
+          <h2 className="font-display text-lg font-semibold">Monetise your boards in one go</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {isLoading ? "Loading…" : `${boards.length} board${boards.length === 1 ? "" : "s"} with pins ready to sell`}
           </p>
@@ -363,55 +389,71 @@ function MonetizeBoards() {
       </div>
 
       {isLoading ? (
-        <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <div className="no-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-52 w-32 shrink-0 animate-pulse rounded-2xl border border-border bg-surface-2 sm:w-36"
-            />
+            <div key={i} className="w-60 shrink-0 snap-start sm:w-64">
+              <div className="h-44 animate-pulse rounded-2xl border border-border bg-surface-2" />
+              <div className="mt-2 h-3 w-2/3 animate-pulse rounded-full bg-surface-2" />
+              <div className="mt-1.5 h-2.5 w-1/2 animate-pulse rounded-full bg-surface-2" />
+            </div>
           ))}
         </div>
       ) : (
-        <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
-          {visibleBoards.map((b, i) => (
-            <div
-              key={b.collection.id}
-              className="group relative h-52 w-32 shrink-0 overflow-hidden rounded-2xl shadow-sm ring-1 ring-border/60 transition hover:-translate-y-0.5 hover:shadow-elevate sm:w-36"
-            >
-              {b.cover ? (
-                <img
-                  src={b.cover}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-105"
-                  loading="lazy"
-                />
-              ) : (
-                <div
-                  className={`absolute inset-0 bg-gradient-to-br ${GRADIENTS[i % GRADIENTS.length]}`}
-                />
-              )}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
-              <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/50 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur">
-                <LayoutGrid className="h-3 w-3" /> {b.total}
+        <div className="no-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+          {visibleBoards.map((b, i) => {
+            const [cover, ...rest] = b.images;
+            const side = rest.slice(0, 2);
+            const grad = GRADIENTS[i % GRADIENTS.length];
+            return (
+              <div key={b.collection.id} className="group w-60 shrink-0 snap-start sm:w-64">
+                {/* Real Pinterest board-cover collage — big cover + two stacked side thumbnails */}
+                <div className="relative overflow-hidden rounded-2xl bg-surface ring-1 ring-border/60 transition group-hover:shadow-elevate">
+                  <div className="flex h-44 gap-0.5">
+                    <div className={`relative flex-[2] bg-gradient-to-br ${grad}`}>
+                      {cover && (
+                        <img
+                          src={cover}
+                          alt=""
+                          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                          loading="lazy"
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-1 flex-col gap-0.5">
+                      {[0, 1].map((idx) => {
+                        const p = side[idx];
+                        const g = GRADIENTS[(i + idx + 1) % GRADIENTS.length];
+                        return (
+                          <div key={idx} className={`relative flex-1 bg-gradient-to-br ${g}`}>
+                            {p && <img src={p} alt="" className="h-full w-full object-cover" loading="lazy" />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/70 to-transparent" />
+                  <Link
+                    to="/pins/monetize-board"
+                    search={{ collectionId: b.collection.id }}
+                    className="absolute inset-x-2 bottom-2 flex items-center justify-center gap-1 rounded-full bg-white px-2 py-2 text-[11px] font-semibold text-foreground shadow-sm transition hover:bg-white/90"
+                  >
+                    <Sparkles className="h-3 w-3 text-primary" /> Monetise
+                  </Link>
+                </div>
+                <div className="px-1 pt-2">
+                  <h3 className="line-clamp-1 text-sm font-semibold">{b.collection.name}</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {b.total} {b.total === 1 ? "Pin" : "Pins"}
+                  </p>
+                </div>
               </div>
-              <div className="absolute inset-x-2 bottom-11 text-white">
-                <p className="line-clamp-2 text-[11px] font-medium leading-tight">{b.collection.name}</p>
-                <p className="mt-1 text-[10px] opacity-80">{b.unmonetized} to monetise</p>
-              </div>
-              <Link
-                to="/pins/monetize-board"
-                search={{ collectionId: b.collection.id }}
-                className="absolute inset-x-2 bottom-2 flex items-center justify-center gap-1 rounded-full bg-white px-2 py-2 text-[11px] font-semibold text-foreground shadow-sm transition hover:bg-white/90"
-              >
-                <Sparkles className="h-3 w-3 text-primary" /> Monetise
-              </Link>
-            </div>
-          ))}
+            );
+          })}
           {hasMore && (
             <Link
               to="/pins/attach"
               search={{ intent: "monetize" }}
-              className="flex h-52 w-24 shrink-0 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface-2/40 text-center transition hover:border-primary/40 hover:bg-surface-2 sm:w-28"
+              className="flex h-44 w-28 shrink-0 snap-start flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface-2/40 text-center transition hover:border-primary/40 hover:bg-surface-2 sm:w-32"
             >
               <span className="grid h-9 w-9 place-items-center rounded-full bg-surface text-primary shadow-sm">
                 <ArrowRight className="h-4 w-4" />
