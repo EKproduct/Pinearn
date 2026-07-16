@@ -67,7 +67,6 @@ const BRAND_INFO: Record<string, { initial: string; color: string }> = {
   Lenskart: { initial: "L", color: "oklch(0.55 0.18 30)" },
   Purplle: { initial: "P", color: "oklch(0.5 0.18 300)" },
 };
-const BRANDS = Object.keys(BRAND_INFO);
 
 type OrderStatus = "pending" | "confirmed" | "cancelled";
 type PayoutStage = "confirmed" | "requested" | "paid";
@@ -1013,7 +1012,7 @@ type BrandRow = {
 // against our known brand catalog (real name/color/logo) when the domain is
 // recognized, otherwise fall back to the bare hostname rather than inventing
 // a brand that isn't there.
-function brandFromUrl(url: string): { name: string; color: string; initial: string } {
+function resolveBrandFromUrl(url: string): { name: string; color: string; initial: string } {
   let host = "";
   try {
     host = new URL(url).hostname.replace(/^www\./, "");
@@ -1045,7 +1044,7 @@ function BrandsPanel() {
   const rows = useMemo(() => {
     const byBrand = new Map<string, BrandRow>();
     for (const p of products) {
-      const { name, color, initial } = brandFromUrl(p.affiliate_url);
+      const { name, color, initial } = resolveBrandFromUrl(p.affiliate_url);
       const key = name.toLowerCase();
       const existing = byBrand.get(key);
       if (existing) existing.productsAttached += 1;
