@@ -11,10 +11,16 @@ import { startPinterestOAuth } from "@/lib/pinterest-oauth.functions";
 import { getFriendlyMessage } from "@/lib/friendly-error";
 
 export const Route = createFileRoute("/_authenticated/profile")({
+  // The Health Score "Complete Profile" action deep-links straight to the
+  // specific missing field (avatar / Pinterest connection), not a generic page.
+  validateSearch: (s: Record<string, unknown>): { focus?: "avatar" | "pinterest" } => ({
+    focus: s.focus === "avatar" || s.focus === "pinterest" ? s.focus : undefined,
+  }),
   component: ProfilePage,
 });
 
 function ProfilePage() {
+  const { focus } = Route.useSearch();
   const runStartOAuth = useServerFn(startPinterestOAuth);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -28,6 +34,17 @@ function ProfilePage() {
   const [avatarLoaded, setAvatarLoaded] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const connectButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Deep-linked from the Health Score: jump straight to the missing field the
+  // moment the form renders.
+  useEffect(() => {
+    if (loading || !focus) return;
+    const el = focus === "avatar" ? avatarInputRef.current : connectButtonRef.current;
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    el?.focus();
+  }, [loading, focus]);
 
   const { data: pinCount } = useQuery({
     queryKey: ["pin-count", userId],
@@ -194,6 +211,7 @@ function ProfilePage() {
                 </Field>
               ) : (
                 <button
+                  ref={connectButtonRef}
                   onClick={connectPinterest}
                   disabled={connecting}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary transition hover:bg-primary/10 disabled:opacity-60"
@@ -208,6 +226,7 @@ function ProfilePage() {
               )}
               <Field label="Avatar URL" icon={ImagePlus}>
                 <input
+                  ref={avatarInputRef}
                   value={avatarUrl}
                   onChange={(e) => {
                     setAvatarUrl(e.target.value);

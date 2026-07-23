@@ -36,6 +36,11 @@ import type { Collection, Product, Storefront } from "./pins";
 type PinterestBoard = { id: string; name: string };
 
 export const Route = createFileRoute("/_authenticated/pins_/create")({
+  // The Health Score "Add Fresh Pins" action deep-links here pre-filtered to
+  // a board (collection id) with no recent activity.
+  validateSearch: (s: Record<string, unknown>): { board?: string } => ({
+    board: typeof s.board === "string" ? s.board : undefined,
+  }),
   component: CreatePinWizard,
 });
 
@@ -49,6 +54,7 @@ const STEP_LABELS: Record<Step, string> = {
 };
 
 function CreatePinWizard() {
+  const { board: boardFromSearch } = Route.useSearch();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [step, setStep] = useState<Step>(1);
@@ -87,8 +93,12 @@ function CreatePinWizard() {
   });
 
   useEffect(() => {
-    if (!boardId && boards.length > 0) setBoardId(boards[0].id);
-  }, [boards, boardId]);
+    if (boardId || boards.length === 0) return;
+    // A deep-linked stale board (Health Score freshness fix) wins over the
+    // default first-board pick.
+    const linked = boardFromSearch && boards.find((b) => b.id === boardFromSearch);
+    setBoardId(linked ? linked.id : boards[0].id);
+  }, [boards, boardId, boardFromSearch]);
 
   const { data: storefronts = [] } = useQuery({
     queryKey: ["storefronts"],
