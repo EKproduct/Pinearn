@@ -39,12 +39,15 @@ import { hostBrand } from "@/lib/brands";
 const DEFAULT_BACKGROUND =
   "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
 
-type StorefrontSearch = { collection?: string };
+type StorefrontSearch = { collection?: string; edit?: 1 };
 
 export const Route = createFileRoute("/_authenticated/storefront")({
   component: StorefrontPage,
   validateSearch: (search: Record<string, unknown>): StorefrontSearch => ({
     collection: typeof search.collection === "string" ? search.collection : undefined,
+    // The Health Score "Complete Profile" action deep-links here to fill the
+    // bio/website — auto-opens the edit-store dialog.
+    edit: search.edit === 1 || search.edit === "1" ? 1 : undefined,
   }),
 });
 
@@ -134,6 +137,11 @@ function StorefrontPage() {
   useEffect(() => {
     if (search.collection) setViewCollectionFor(search.collection);
   }, [search.collection]);
+
+  // Deep-linked from the Health Score: open the edit dialog immediately.
+  useEffect(() => {
+    if (search.edit) setShowEditStore(true);
+  }, [search.edit]);
 
   const importBoards = useServerFn(importPinterestBoards);
 

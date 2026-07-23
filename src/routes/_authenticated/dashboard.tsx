@@ -15,6 +15,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   MousePointerClick,
   Coins,
+  Rocket,
   ImagePlus,
   Link2,
   Link as LinkIcon,
@@ -167,13 +168,9 @@ function Dashboard() {
       <div className="mt-8">
         <h2 className="mb-4 font-display text-lg font-semibold">Quick actions</h2>
         <div className="grid grid-cols-3 gap-3 sm:gap-4">
-          <QuickAction to="/pins/attach" icon={Link2} label="Attach product" />
+          <QuickAction to="/pins/attach" icon={Link2} label="Attach" />
           <QuickAction to="/pins/create" icon={Plus} label="Create pin" />
-          <QuickAction
-            onClick={openAffiliateLinkDialog}
-            icon={LinkIcon}
-            label="Create affiliate link"
-          />
+          <QuickAction to="/boost" icon={Rocket} label="Boost Pins" />
         </div>
       </div>
 
@@ -185,7 +182,36 @@ function Dashboard() {
 
       {/* Best selling brands */}
       <BrandsSection brands={BEST_SELLING_BRANDS} />
+
+      {/* Affiliate link maker — moved out of Quick actions (Health Score took
+          its slot) down to the very bottom of the dashboard. */}
+      <AffiliateLinkMaker />
     </AppShell>
+  );
+}
+
+function AffiliateLinkMaker() {
+  return (
+    <div className="mt-8 flex items-center gap-3.5 rounded-3xl border border-border bg-surface p-5 shadow-sm sm:gap-4">
+      <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary sm:h-14 sm:w-14">
+        <LinkIcon className="h-6 w-6" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <h2 className="font-display text-base font-bold leading-tight sm:text-lg">
+          Make an affiliate link
+        </h2>
+        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground sm:text-sm">
+          Paste any product URL, get a trackable link instantly.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={openAffiliateLinkDialog}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-90"
+      >
+        Create <ArrowRight className="h-4 w-4" />
+      </button>
+    </div>
   );
 }
 
@@ -223,28 +249,30 @@ function MonetizePins() {
 
   const pins = useMemo(() => {
     const realById = new Map((pinterestData?.pins ?? []).map((p) => [p.id, p]));
-    return [...dbPins]
-      .map((p) => {
-        const real = realById.get(p.id);
-        return {
-          id: p.id,
-          title: p.title,
-          image_url: p.image_url,
-          impressions: real?.impressions ?? p.impressions,
-          clicks: real?.clicks ?? p.clicks,
-        };
-      })
-      .sort((a, b) => b.impressions - a.impressions)
-      // Hardcoded impressions/clicks in strictly decreasing order — the first
-      // card headlines the biggest number and each one steps down from there.
-      .map((p, i) => {
-        const impressions = Math.round(48_200 * Math.pow(0.86, i));
-        return {
-          ...p,
-          impressions,
-          clicks: Math.max(1, Math.round(impressions * 0.037)),
-        };
-      });
+    return (
+      [...dbPins]
+        .map((p) => {
+          const real = realById.get(p.id);
+          return {
+            id: p.id,
+            title: p.title,
+            image_url: p.image_url,
+            impressions: real?.impressions ?? p.impressions,
+            clicks: real?.clicks ?? p.clicks,
+          };
+        })
+        .sort((a, b) => b.impressions - a.impressions)
+        // Hardcoded impressions/clicks in strictly decreasing order — the first
+        // card headlines the biggest number and each one steps down from there.
+        .map((p, i) => {
+          const impressions = Math.round(48_200 * Math.pow(0.86, i));
+          return {
+            ...p,
+            impressions,
+            clicks: Math.max(1, Math.round(impressions * 0.037)),
+          };
+        })
+    );
   }, [dbPins, pinterestData]);
 
   // Nothing unmonetized — skip the whole section rather than show an empty CTA.
@@ -393,13 +421,15 @@ function MonetizeBoards() {
       if (p.image_url && b.images.length < 3) b.images.push(p.image_url);
       if (!p.product_id) b.unmonetized += 1;
     }
-    return Array.from(byId.values())
-      .filter((b) => b.unmonetized > 0)
-      .sort((a, b) => b.unmonetized - a.unmonetized)
-      // Hardcoded impressions in strictly decreasing order — mirrors the pins
-      // strip above so the top board headlines the biggest reach and each card
-      // steps down from there.
-      .map((b, i) => ({ ...b, impressions: Math.round(128_400 * Math.pow(0.84, i)) }));
+    return (
+      Array.from(byId.values())
+        .filter((b) => b.unmonetized > 0)
+        .sort((a, b) => b.unmonetized - a.unmonetized)
+        // Hardcoded impressions in strictly decreasing order — mirrors the pins
+        // strip above so the top board headlines the biggest reach and each card
+        // steps down from there.
+        .map((b, i) => ({ ...b, impressions: Math.round(128_400 * Math.pow(0.84, i)) }))
+    );
   }, [collections, pins]);
 
   // No board has anything left to monetize — skip the section entirely.
