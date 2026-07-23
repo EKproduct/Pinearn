@@ -18,6 +18,8 @@ import "@fontsource/figtree/500.css";
 import "@fontsource/figtree/600.css";
 import "@fontsource/figtree/700.css";
 
+import { MotionConfig } from "framer-motion";
+
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { supabase } from "@/integrations/supabase/client";
@@ -105,7 +107,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/pinearn-favicon.png", type: "image/png" },
     ],
   }),
   shellComponent: RootShell,
@@ -167,9 +169,14 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
-      <MonetizationFloater />
-      <Toaster theme="light" position="top-right" richColors closeButton duration={2500} />
+      {/* Honour prefers-reduced-motion app-wide: framer-motion drops transform/
+          layout animations for these users. Imperative animate() calls (e.g.
+          AnimatedNumber) additionally self-guard via useReducedMotion(). */}
+      <MotionConfig reducedMotion="user">
+        <Outlet />
+        <MonetizationFloater />
+        <Toaster theme="light" position="top-right" richColors closeButton duration={2500} />
+      </MotionConfig>
     </QueryClientProvider>
   );
 }
