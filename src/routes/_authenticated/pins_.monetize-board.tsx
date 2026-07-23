@@ -9,11 +9,13 @@ import {
   CheckCheck,
   ChevronLeft,
   ClipboardPaste,
+  Eye,
   Heart,
   Home,
   Image as ImageIcon,
   Link2,
   Loader2,
+  Navigation,
   PartyPopper,
   Plus,
   RefreshCw,
@@ -61,6 +63,12 @@ export const Route = createFileRoute("/_authenticated/pins_/monetize-board")({
 
 type ManualProduct = { id: string; title: string; url: string; selected: boolean };
 type ManualDraft = { pasteUrl: string; products: ManualProduct[] };
+
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return n.toLocaleString();
+}
 
 function deriveManualTitle(pinTitle: string, url: string): string {
   let hostname = "New product";
@@ -860,6 +868,19 @@ function MonetizeBoardPage() {
             <span className="text-muted-foreground/40">•</span>
             <span>{skippedCount} skipped</span>
           </div>
+
+          {/* Current pin's Pinterest traffic — impressions + clicks. */}
+          {current && (
+            <div className="flex shrink-0 items-center justify-center gap-3 pb-2 text-[11px] font-semibold text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <Eye className="h-3.5 w-3.5" /> {fmtCompact(current.impressions)} impressions
+              </span>
+              <span className="text-muted-foreground/40">•</span>
+              <span className="inline-flex items-center gap-1">
+                <Navigation className="h-3.5 w-3.5" /> {fmtCompact(current.clicks)} clicks
+              </span>
+            </div>
+          )}
 
           {/* Pin navigator + detected products. The navigator is a neutral grey
               panel; the product card below carries the brand-red boundary. The

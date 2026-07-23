@@ -2100,6 +2100,8 @@ export type BoardCandidate = {
   pinId: string;
   title: string;
   imageUrl: string | null;
+  impressions: number;
+  clicks: number;
 };
 
 export const getBoardMonetizationCandidates = createServerFn({ method: "POST" })
@@ -2126,7 +2128,7 @@ export const getBoardMonetizationCandidates = createServerFn({ method: "POST" })
     // them up front.
     const { data: pins, error: pErr } = await supabase
       .from("pins")
-      .select("id,title,image_url")
+      .select("id,title,image_url,impressions,clicks")
       .eq("collection_id", data.collectionId)
       .eq("is_owner", true)
       .is("product_id", null)
@@ -2137,6 +2139,8 @@ export const getBoardMonetizationCandidates = createServerFn({ method: "POST" })
       pinId: p.id,
       title: p.title,
       imageUrl: p.image_url,
+      impressions: p.impressions ?? 0,
+      clicks: p.clicks ?? 0,
     }));
 
     return { boardName: collection.name, candidates };

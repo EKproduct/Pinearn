@@ -282,6 +282,80 @@ function Analytics() {
     },
   });
 
+  // Products attached to live pins, straight from our own DB — same reasoning
+  // as livePins above. getPinterestAnalytics only carries products for pins
+  // with a pinterest_pin_id and blanks out when Pinterest is unreachable, so
+  // relying on it alone made the pin breakdown show no products at all. This
+  // is the source of truth; it covers both the new pin_id tagging and the
+  // legacy single product_id pointer.
+  const { data: liveProducts = [] } = useQuery({
+    queryKey: ["analytics-live-products"],
+    queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
+      const { data: livePinRows } = await supabase
+        .from("pins")
+        .select("id, product_id")
+        .eq("user_id", userId)
+        .eq("is_owner", true)
+        .eq("status", "live");
+      const pinIds = (livePinRows ?? []).map((p) => p.id);
+      if (pinIds.length === 0) return [];
+
+      // Products tagged directly to a pin (new routing).
+      const { data: tagged } = await supabase
+        .from("storefront_products")
+        .select("id, title, image_url, affiliate_url, pin_id")
+        .in("pin_id", pinIds);
+
+      const byPin = new Map<string, ProductDef[]>();
+      for (const pr of tagged ?? []) {
+        if (!pr.pin_id) continue;
+        const arr = byPin.get(pr.pin_id) ?? [];
+        arr.push({
+          id: pr.id,
+          pinId: pr.pin_id,
+          title: pr.title,
+          image: pr.image_url ?? pickPlaceholderImage(pr.id),
+          brand: brandFromUrl(pr.affiliate_url),
+          clicks: 0,
+        });
+        byPin.set(pr.pin_id, arr);
+      }
+
+      // Legacy fallback: pins monetised before pin_id tagging carry a single
+      // product_id — surface it so their breakdown isn't empty.
+      const legacy = (livePinRows ?? []).filter(
+        (p) => p.product_id && !byPin.get(p.id)?.length,
+      );
+      if (legacy.length) {
+        const { data: legacyProducts } = await supabase
+          .from("storefront_products")
+          .select("id, title, image_url, affiliate_url")
+          .in("id", legacy.map((p) => p.product_id as string));
+        const prById = new Map((legacyProducts ?? []).map((p) => [p.id, p]));
+        for (const p of legacy) {
+          const pr = prById.get(p.product_id as string);
+          if (pr) {
+            byPin.set(p.id, [
+              {
+                id: pr.id,
+                pinId: p.id,
+                title: pr.title,
+                image: pr.image_url ?? pickPlaceholderImage(pr.id),
+                brand: brandFromUrl(pr.affiliate_url),
+                clicks: 0,
+              },
+            ]);
+          }
+        }
+      }
+
+      return Array.from(byPin.values()).flat();
+    },
+  });
+
   const overview = pinterestData?.overview ?? {
     impressions: 0,
     pinClicks: 0,
@@ -304,20 +378,22 @@ function Analytics() {
     });
   }, [livePins, pinterestData]);
 
-  const PRODUCT_DEFS: ProductDef[] = useMemo(
-    () =>
-      (pinterestData?.pins ?? []).flatMap((p) =>
-        (p.products ?? []).map((product) => ({
-          id: product.id,
-          pinId: p.id,
-          title: product.title,
-          image: product.image_url ?? pickPlaceholderImage(product.id),
-          brand: brandFromUrl(product.affiliate_url),
-          clicks: 0, // no real per-product click tracking exists yet
-        })),
-      ),
-    [pinterestData],
-  );
+  const PRODUCT_DEFS: ProductDef[] = useMemo(() => {
+    // DB-backed products are the source of truth (available even when the
+    // Pinterest API is down). Only fall back to the Pinterest-derived list
+    // if the DB query hasn't returned anything.
+    if (liveProducts.length > 0) return liveProducts;
+    return (pinterestData?.pins ?? []).flatMap((p) =>
+      (p.products ?? []).map((product) => ({
+        id: product.id,
+        pinId: p.id,
+        title: product.title,
+        image: product.image_url ?? pickPlaceholderImage(product.id),
+        brand: brandFromUrl(product.affiliate_url),
+        clicks: 0, // no real per-product click tracking exists yet
+      })),
+    );
+  }, [liveProducts, pinterestData]);
 
   const rangeOrders = useMemo(() => ordersInRange(range), [range]);
   const totalEarnings = rangeOrders.reduce((a, o) => a + o.earnings, 0);
@@ -853,6 +929,12 @@ function PinsPanel({
               <div className="mt-3 flex gap-2">
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Impressions
+                  </div>
+                  <div className="text-sm font-semibold">{fmt(pin.impressions)}</div>
+                </div>
+                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                     Pin Clicks
                   </div>
                   <div className="text-sm font-semibold">{fmt(pin.clicks)}</div>
@@ -907,7 +989,10 @@ function PinBreakdownDialog({
   onClose: () => void;
 }) {
   const agg = pinAggFor(pin);
-  const pinProducts = products.filter((p) => p.pinId === pin.id);
+  const pinProducts = useMemo(
+    () => products.filter((p) => p.pinId === pin.id),
+    [products, pin.id],
+  );
 
   return (
     <ModalShell onClose={onClose} z={60}>
