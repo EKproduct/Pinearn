@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
@@ -15,11 +15,22 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
+import {
+  SuggestionCard,
+  ProgressiveSuggestionCard,
+  realProductPrice,
+} from "@/components/suggestion-card";
+import { EducationalLoader, HINTS } from "@/components/rotating-hint";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { hostBrand } from "@/lib/brands";
-import { visualSearchImage, createPinterestPin } from "@/lib/pinterest.functions";
+import { getFriendlyMessage } from "@/lib/friendly-error";
+import {
+  visualSearchImage,
+  createPinterestPin,
+  type CkResult,
+  type RawVisualMatch,
+} from "@/lib/pinterest.functions";
 import type { Collection, Product, Storefront } from "./pins";
 
 type PinterestBoard = { id: string; name: string };
@@ -47,6 +58,8 @@ function CreatePinWizard() {
   const [uploading, setUploading] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   const [storefrontId, setStorefrontId] = useState<string>("");
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
@@ -151,7 +164,7 @@ function CreatePinWizard() {
       setImageUrl(signed.signedUrl);
       toast.success("Image uploaded");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Upload failed");
+      toast.error(getFriendlyMessage(e));
     } finally {
       setUploading(false);
     }
@@ -183,12 +196,16 @@ function CreatePinWizard() {
       toast.success("Pin published to Pinterest");
       navigate({ to: "/pins" });
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(getFriendlyMessage(e)),
   });
 
   function next() {
     if (step === 1 && !imageUrl) return toast.error("Upload an image to continue");
-    if (step === 2 && !title.trim()) return toast.error("Add a title");
+    if (step === 2 && !title.trim()) {
+      setTitleError("Add a title");
+      titleInputRef.current?.focus();
+      return toast.error("Add a title");
+    }
     if (step === 3 && selectedProductIds.length === 0)
       return toast.error("Pick at least one product");
     setStep((s) => (s < 4 ? ((s + 1) as Step) : s));
@@ -199,6 +216,7 @@ function CreatePinWizard() {
       title="Create pin"
       subtitle={STEP_LABELS[step]}
       backButton
+      backTo="/pins"
       hideBottomNav
     >
       <input
@@ -257,6 +275,9 @@ function CreatePinWizard() {
             setTitle={setTitle}
             description={description}
             setDescription={setDescription}
+            titleError={titleError}
+            setTitleError={setTitleError}
+            titleInputRef={titleInputRef}
           />
         )}
         {step === 3 && (
@@ -290,7 +311,10 @@ function CreatePinWizard() {
       </div>
 
       {/* Sticky footer */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-4 py-3 backdrop-blur-xl">
+      <div
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-5 py-3 backdrop-blur-xl"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
         <div className="mx-auto flex max-w-2xl items-center justify-end gap-3">
           {step < 4 ? (
             <button
@@ -330,6 +354,7 @@ function StepImage({
   onPick: () => void;
   onClear: () => void;
 }) {
+  const [imgLoaded, setImgLoaded] = useState(false);
   return (
     <div className="space-y-4">
       <h2 className="font-display text-xl font-bold">Add a photo</h2>
@@ -338,7 +363,16 @@ function StepImage({
       </p>
       {imageUrl ? (
         <div className="relative overflow-hidden rounded-3xl border border-border bg-surface">
-          <img src={imageUrl} alt="" className="max-h-[520px] w-full object-contain" />
+          <img
+            key={imageUrl}
+            src={imageUrl}
+            alt=""
+            loading="lazy"
+            onLoad={() => setImgLoaded(true)}
+            className={`max-h-[520px] w-full object-contain opacity-0 transition-opacity duration-300 ${
+              imgLoaded ? "opacity-100" : ""
+            }`}
+          />
           <button
             onClick={onClear}
             className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-background/90 text-foreground shadow-elevate"
@@ -378,33 +412,54 @@ function StepDetails({
   setTitle,
   description,
   setDescription,
+  titleError,
+  setTitleError,
+  titleInputRef,
 }: {
   imageUrl: string;
   title: string;
   setTitle: (v: string) => void;
   description: string;
   setDescription: (v: string) => void;
+  titleError: string | null;
+  setTitleError: (v: string | null) => void;
+  titleInputRef: React.RefObject<HTMLInputElement | null>;
 }) {
+  const [imgLoaded, setImgLoaded] = useState(false);
   return (
     <div className="space-y-5">
       <h2 className="font-display text-xl font-bold">Pin details</h2>
       <div className="flex gap-4">
         {imageUrl && (
           <img
+            key={imageUrl}
             src={imageUrl}
             alt=""
-            className="hidden h-40 w-32 shrink-0 rounded-2xl object-cover ring-1 ring-border sm:block"
+            loading="lazy"
+            onLoad={() => setImgLoaded(true)}
+            className={`hidden h-40 w-32 shrink-0 rounded-2xl object-cover opacity-0 ring-1 ring-border transition-opacity duration-300 sm:block ${
+              imgLoaded ? "opacity-100" : ""
+            }`}
           />
         )}
         <div className="flex-1 space-y-4">
-          <Field label="Title" hint={`${title.length}/100`}>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value.slice(0, 100))}
-              placeholder="Add a catchy title"
-              className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
-            />
-          </Field>
+          <div>
+            <Field label="Title" hint={`${title.length}/100`}>
+              <input
+                ref={titleInputRef}
+                value={title}
+                onChange={(e) => {
+                  setTitle(e.target.value.slice(0, 100));
+                  if (titleError) setTitleError(null);
+                }}
+                placeholder="Add a catchy title"
+                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
+              />
+            </Field>
+            {titleError && (
+              <p className="mt-1 text-xs font-medium text-destructive">{titleError}</p>
+            )}
+          </div>
           <Field label="Description" hint={`${description.length}/500`}>
             <textarea
               value={description}
@@ -443,10 +498,17 @@ function StepProducts({
   const runVisualSearch = useServerFn(visualSearchImage);
 
   const [manualUrl, setManualUrl] = useState("");
-  const [aiProductIds, setAiProductIds] = useState<Record<number, string>>({});
+  const [productUrlError, setProductUrlError] = useState<string | null>(null);
+  const manualUrlInputRef = useRef<HTMLInputElement>(null);
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  // Keyed by link (stable identity for a progressive-rendering match),
+  // not index — the real storefront_products row id once auto-inserted.
+  const [aiProductIds, setAiProductIds] = useState<Record<string, string>>({});
   const [manualProductIds, setManualProductIds] = useState<Set<string>>(new Set());
-  const [pendingAI, setPendingAI] = useState<Set<number>>(new Set());
   const mountedRef = useRef(true);
+  // Guards against double-inserting the same suggestion — plain ref (not
+  // state) since it only needs to block a duplicate call, never render.
+  const insertingLinksRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -460,41 +522,54 @@ function StepProducts({
     isFetching: aiLoading,
     refetch: refetchAI,
   } = useQuery({
-    queryKey: ["visual-search-image", imageUrl, title],
+    // title/description ride along to the server fn but aren't used by the
+    // actual search (it only ever searches by imageUrl) — keeping them out
+    // of the key means editing the title text can't trigger a redundant
+    // re-search of the same image.
+    queryKey: ["visual-search-image", imageUrl],
     queryFn: () => runVisualSearch({ data: { imageUrl, title, description } }),
     enabled: !!imageUrl,
-    staleTime: 5 * 60_000,
+    // Results are already fully validated (real matches, live price+stock) —
+    // never silently refetch this expensive pipeline in the background; a
+    // manual refetchAI() call is the only way it runs again.
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
   const suggestions = aiData?.suggestions ?? [];
+
+  // Progressive rendering: `suggestions` paints immediately (image/title/
+  // source + Lens price, no CK wait); each card resolves its live price/stock
+  // independently via ProgressiveSuggestionCard. `confirmedByLink` records
+  // each match's outcome the instant it settles — never present = still
+  // resolving, `null` = no price from CK or Lens at all (rare).
+  const [confirmedByLink, setConfirmedByLink] = useState<Map<string, CkResult>>(new Map());
 
   // Reset AI selection tracking when a fresh set of suggestions arrives.
   useEffect(() => {
     setAiProductIds({});
-    setPendingAI(new Set());
+    setConfirmedByLink(new Map());
+    insertingLinksRef.current = new Set();
   }, [aiData]);
 
-  const checkedAI = new Set<number>(
+  const checkedAI = new Set<string>(
     Object.entries(aiProductIds)
       .filter(([, id]) => selectedIds.includes(id))
-      .map(([idx]) => Number(idx)),
+      .map(([link]) => link),
   );
 
-  const toggleAI = async (idx: number) => {
-    const existingId = aiProductIds[idx];
-    if (existingId) {
-      if (selectedIds.includes(existingId)) toggle(existingId);
-      else toggle(existingId);
-      return;
-    }
-    if (pendingAI.has(idx)) return;
-    const s = suggestions[idx];
-    if (!s) return;
+  // Auto-inserts one confirmed-available suggestion as a real
+  // storefront_product — same "add every AI match automatically" behavior
+  // as before, just triggered per-match the instant CK confirms it instead
+  // of blindly looping over unconfirmed raw matches.
+  const autoInsertSuggestion = async (s: RawVisualMatch) => {
+    if (aiProductIds[s.link] || insertingLinksRef.current.has(s.link)) return;
     const targetStorefront = preferredStorefrontId || storefronts[0]?.id;
     if (!targetStorefront) {
       toast.error("Create a storefront first.");
       return;
     }
-    setPendingAI((prev) => new Set(prev).add(idx));
+    insertingLinksRef.current.add(s.link);
     try {
       const { data: userRes } = await supabase.auth.getUser();
       const userId = userRes.user?.id;
@@ -511,35 +586,46 @@ function StepProducts({
         .select("id")
         .single();
       if (error) throw error;
-      setAiProductIds((prev) => ({ ...prev, [idx]: inserted.id as string }));
+      if (!mountedRef.current) return;
+      setAiProductIds((prev) => ({ ...prev, [s.link]: inserted.id as string }));
       toggle(inserted.id as string);
       qc.invalidateQueries({ queryKey: ["all-products"] });
     } catch (e) {
-      toast.error((e as Error).message);
+      toast.error(getFriendlyMessage(e));
     } finally {
-      setPendingAI((prev) => {
-        const next = new Set(prev);
-        next.delete(idx);
-        return next;
-      });
+      insertingLinksRef.current.delete(s.link);
     }
   };
 
-  const toggleAIRef = useRef(toggleAI);
-  toggleAIRef.current = toggleAI;
+  const handleSuggestionSettled = (link: string, details: CkResult) => {
+    setConfirmedByLink((prev) => {
+      if (prev.has(link)) return prev;
+      const next = new Map(prev);
+      next.set(link, details);
+      return next;
+    });
+    // Every match that resolved with a usable price (live CK figure or the
+    // Lens fallback, in stock or not) is auto-attached — there's no
+    // "unavailable" card to hold back anymore. Only a match with no price at
+    // all (`details === null`) is skipped, since there'd be nothing to show.
+    if (details) {
+      const s = suggestions.find((m) => m.link === link);
+      if (s) void autoInsertSuggestion(s);
+    }
+  };
 
-  useEffect(() => {
-    if (aiLoading || suggestions.length === 0) return;
-    if (Object.keys(aiProductIds).length > 0) return;
-    if (pendingAI.size > 0) return;
-
-    (async () => {
-      for (let idx = 0; idx < suggestions.length; idx++) {
-        if (!mountedRef.current) break;
-        await toggleAIRef.current(idx);
-      }
-    })();
-  }, [aiLoading, suggestions.length, aiProductIds, pendingAI]);
+  // Toggling an already-inserted suggestion just flips its selection; a
+  // card can't be tapped before it's confirmed+inserted (ProgressiveSuggestionCard
+  // only renders onToggle once resolved), so this is the common path.
+  const toggleAI = (link: string) => {
+    const existingId = aiProductIds[link];
+    if (existingId) {
+      toggle(existingId);
+      return;
+    }
+    const s = suggestions.find((m) => m.link === link);
+    if (s) void autoInsertSuggestion(s);
+  };
 
   const addProduct = useMutation({
     mutationFn: async () => {
@@ -586,9 +672,14 @@ function StepProducts({
       if (!selectedIds.includes(id)) toggle(id);
       setManualProductIds((prev) => new Set(prev).add(id));
       setManualUrl("");
+      setProductUrlError(null);
       toast.success(duplicate ? "Already in Your products — selected" : "Added to Your products");
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      toast.error(getFriendlyMessage(e));
+      setProductUrlError(e.message);
+      manualUrlInputRef.current?.focus();
+    },
   });
 
   return (
@@ -597,15 +688,24 @@ function StepProducts({
       {imageUrl && (
         <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
           <div className="relative mx-auto aspect-[4/5] max-h-72 w-full">
-            <img src={imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
-            {aiLoading && (
+            <img
+              key={imageUrl}
+              src={imageUrl}
+              alt=""
+              loading="lazy"
+              onLoad={() => setPreviewLoaded(true)}
+              className={`absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 ${
+                previewLoaded ? "opacity-100" : ""
+              }`}
+            />
+            {aiLoading && suggestions.length === 0 && (
               <>
                 <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
                 <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
               </>
             )}
             <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-              {aiLoading ? (
+              {aiLoading && suggestions.length === 0 ? (
                 <>
                   <Loader2 className="h-3 w-3 animate-spin" /> Visual search…
                 </>
@@ -627,13 +727,20 @@ function StepProducts({
         <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-input bg-background px-3 py-2.5">
           <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
+            ref={manualUrlInputRef}
             type="url"
             value={manualUrl}
-            onChange={(e) => setManualUrl(e.target.value)}
+            onChange={(e) => {
+              setManualUrl(e.target.value);
+              if (productUrlError) setProductUrlError(null);
+            }}
             placeholder="Paste an affiliate link…"
             className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
           />
         </div>
+        {productUrlError && (
+          <p className="mt-1 text-xs font-medium text-destructive">{productUrlError}</p>
+        )}
         <button
           type="button"
           onClick={() => addProduct.mutate()}
@@ -671,41 +778,27 @@ function StepProducts({
             </button>
           </div>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-          {aiLoading && suggestions.length === 0 ? (
-            Array.from({ length: 3 }).map((_, i) => (
-              <div
-                key={i}
-                className="overflow-hidden rounded-xl border border-dashed border-border bg-surface-2/40"
-              >
-                <div className="aspect-square w-full animate-pulse bg-surface-2/60" />
-                <div className="space-y-1.5 p-2.5">
-                  <div className="h-2 w-1/3 animate-pulse rounded-full bg-muted" />
-                  <div className="h-2.5 w-4/5 animate-pulse rounded-full bg-muted" />
-                  <div className="h-5 w-full animate-pulse rounded-full bg-muted/70" />
-                </div>
-              </div>
-            ))
-          ) : suggestions.length === 0 ? (
-            <p className="col-span-full rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
-              No suggestions yet.
-            </p>
-          ) : (
-            suggestions.map((s, idx) => (
-              <SuggestionCard
-                key={idx}
-                title={s.title}
-                thumbnail={s.thumbnail}
-                source={s.source}
-                link={s.link}
-                price={s.price}
-                selected={checkedAI.has(idx)}
-                pending={pendingAI.has(idx)}
-                onToggle={() => toggleAI(idx)}
+        {aiLoading && suggestions.length === 0 ? (
+          <div className="mt-3">
+            <EducationalLoader label="Finding matching products…" hints={HINTS.createScan} />
+          </div>
+        ) : suggestions.length === 0 ? (
+          <p className="mt-3 rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
+            No matching products found.
+          </p>
+        ) : (
+          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+            {suggestions.map((s) => (
+              <ProgressiveSuggestionCard
+                key={s.link}
+                match={s}
+                selected={checkedAI.has(s.link)}
+                onToggle={() => toggleAI(s.link)}
+                onSettled={handleSuggestionSettled}
               />
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Products */}
@@ -785,6 +878,7 @@ function StepReview({
   boardId: string;
   setBoardId: (id: string) => void;
 }) {
+  const [imgLoaded, setImgLoaded] = useState(false);
   return (
     <div className="space-y-5">
       <h2 className="font-display text-xl font-bold">Ready to publish</h2>
@@ -792,9 +886,17 @@ function StepReview({
       <div>
         <label className="mb-1.5 block text-sm font-medium">Pinterest board</label>
         {boards.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-3 text-xs text-muted-foreground">
-            No synced boards yet — sync your Pinterest boards from Storefront first.
-          </p>
+          <div className="space-y-2 rounded-xl border border-dashed border-border bg-surface-2/40 p-3">
+            <p className="text-xs text-muted-foreground">
+              No synced boards yet — sync your Pinterest boards from Storefront first.
+            </p>
+            <Link
+              to="/storefront"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+            >
+              Go to Storefront <ChevronRight className="h-3 w-3" />
+            </Link>
+          </div>
         ) : (
           <select
             value={boardId}
@@ -811,7 +913,18 @@ function StepReview({
       </div>
 
       <div className="overflow-hidden rounded-3xl border border-border bg-surface">
-        {imageUrl && <img src={imageUrl} alt="" className="max-h-[420px] w-full object-cover" />}
+        {imageUrl && (
+          <img
+            key={imageUrl}
+            src={imageUrl}
+            alt=""
+            loading="lazy"
+            onLoad={() => setImgLoaded(true)}
+            className={`max-h-[420px] w-full object-cover opacity-0 transition-opacity duration-300 ${
+              imgLoaded ? "opacity-100" : ""
+            }`}
+          />
+        )}
         <div className="space-y-3 p-5">
           <h3 className="font-display text-lg font-bold">{title || "Untitled pin"}</h3>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}

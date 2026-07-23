@@ -148,7 +148,9 @@ function CtaCard({
 }) {
   return (
     <>
-      <div className={`relative flex h-40 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient}`}>
+      <div
+        className={`relative flex h-40 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient}`}
+      >
         <div className="absolute inset-0 opacity-40 [background:radial-gradient(circle_at_30%_20%,white,transparent_55%)]" />
         <motion.div
           initial={{ scale: 0.6, opacity: 0, rotate: -8 }}

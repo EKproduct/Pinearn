@@ -174,6 +174,17 @@ export function refreshAccessToken(refreshToken: string): Promise<PinterestToken
 // Authenticated REST calls
 // ---------------------------------------------------------------
 
+// Thrown for the one failure class where retrying with the SAME token can
+// never help: Pinterest rejected it (401). Callers (see withPinterestToken in
+// pinterest-oauth.functions.ts) catch this specifically to force a refresh
+// and retry once — every other error type is left alone.
+export class PinterestAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PinterestAuthError";
+  }
+}
+
 async function pinterestFetch(accessToken: string, path: string, init?: RequestInit) {
   const res = await fetch(`${apiBase()}${path}`, {
     ...init,
@@ -187,7 +198,7 @@ async function pinterestFetch(accessToken: string, path: string, init?: RequestI
     const text = await res.text().catch(() => "");
     const detail = describePinterestError(res.status, text);
     if (res.status === 401) {
-      throw new Error(
+      throw new PinterestAuthError(
         `Pinterest rejected the access token calling ${path} (401 unauthorized: ${detail}). ` +
           `The token is likely expired, revoked, or missing a required scope — reconnect Pinterest.`,
       );
@@ -251,8 +262,10 @@ export type PinterestPin = {
 // whichever variant has the largest reported width/height, preferring
 // `originals` when present.
 function largestImage(media: unknown): string | null {
-  const images = (media as { images?: Record<string, { url?: string; width?: number; height?: number }> } | undefined)
-    ?.images;
+  const images = (
+    media as
+      { images?: Record<string, { url?: string; width?: number; height?: number }> } | undefined
+  )?.images;
   if (!images) return null;
   if (images.originals?.url) return images.originals.url;
 
@@ -329,7 +342,9 @@ export type PinterestAccountAnalytics = {
 
 const ANALYTICS_METRIC_TYPES = "IMPRESSION,PIN_CLICK,OUTBOUND_CLICK,SAVE,ENGAGEMENT";
 
-function toAnalyticsMetrics(summary: Record<string, number> | undefined): PinterestAccountAnalytics {
+function toAnalyticsMetrics(
+  summary: Record<string, number> | undefined,
+): PinterestAccountAnalytics {
   return {
     impressions: Number(summary?.IMPRESSION ?? 0),
     pinClicks: Number(summary?.PIN_CLICK ?? 0),
@@ -364,9 +379,14 @@ export async function getTopPinsAnalytics(
     metric_types: ANALYTICS_METRIC_TYPES,
     sort_by: "IMPRESSION",
   });
-  const data = await pinterestFetch(accessToken, `/user_account/analytics/top_pins?${qs.toString()}`);
+  const data = await pinterestFetch(
+    accessToken,
+    `/user_account/analytics/top_pins?${qs.toString()}`,
+  );
   const items = (data?.pins ?? []) as Array<{ pin_id: string; metrics: Record<string, number> }>;
-  return items.slice(0, range.limit ?? 500).map((p) => ({ pinId: p.pin_id, ...toAnalyticsMetrics(p.metrics) }));
+  return items
+    .slice(0, range.limit ?? 500)
+    .map((p) => ({ pinId: p.pin_id, ...toAnalyticsMetrics(p.metrics) }));
 }
 
 export async function createPin(
@@ -410,7 +430,11 @@ export async function getPinAnalytics(
   try {
     const data = await pinterestFetch(accessToken, `/pins/${pinId}/analytics?${qs.toString()}`);
     return toAnalyticsMetrics(data?.all?.summary_metrics ?? data?.summary_metrics);
-  } catch {
+  } catch (e) {
+    // A rejected token must propagate — swallowing it here made a dead token
+    // look like "every pin has 0 impressions" and OVERWROTE real synced
+    // numbers with zeros. The caller's token-refresh layer handles it.
+    if (e instanceof PinterestAuthError) throw e;
     // Analytics can lag behind a freshly-created Pin, or be unavailable in
     // Sandbox — don't fail the whole sync over one Pin's metrics.
     return { impressions: 0, pinClicks: 0, outboundClicks: 0, saves: 0, engagement: 0 };

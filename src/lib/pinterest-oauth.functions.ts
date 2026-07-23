@@ -6,6 +6,7 @@ import {
   buildAuthorizeUrl,
   exchangeCode,
   getUserAccount,
+  PinterestAuthError,
   refreshAccessToken,
   signOAuthState,
   verifyOAuthState,
@@ -17,7 +18,7 @@ import {
 
 export const startPinterestOAuth = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { returnTo: string }) => z.object({ returnTo: z.string().min(1) }).parse(d))
+  .validator((d: { returnTo: string }) => z.object({ returnTo: z.string().min(1) }).parse(d))
   .handler(async ({ data, context }) => {
     const state = await signOAuthState({ uid: context.userId, returnTo: data.returnTo });
     return { url: buildAuthorizeUrl(state) };
@@ -29,7 +30,7 @@ export const startPinterestOAuth = createServerFn({ method: "POST" })
 
 export const completePinterestOAuthCallback = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { code: string; state: string }) =>
+  .validator((d: { code: string; state: string }) =>
     z.object({ code: z.string().min(1), state: z.string().min(1) }).parse(d),
   )
   .handler(async ({ data, context }) => {
@@ -107,7 +108,19 @@ export const disconnectPinterest = createServerFn({ method: "POST" })
 // live, non-expired access token, refreshing and persisting it if needed.
 // -------------------------------------------------------------
 
-export async function getValidPinterestToken(userId: string): Promise<string> {
+// The board bulk-approve flow can have several `getPinRecommendation` calls
+// in flight for the same user at once, and each independently lands here —
+// without de-duping, a token sitting near its expiry window would trigger
+// several concurrent refresh calls to Pinterest for the same user, each
+// racing to persist its own (all equally valid, but wastefully duplicated)
+// result. Keyed in-flight cache so only the first caller actually refreshes;
+// everyone else just awaits that same result.
+const refreshInFlight = new Map<string, Promise<string>>();
+
+export async function getValidPinterestToken(
+  userId: string,
+  opts?: { forceRefresh?: boolean },
+): Promise<string> {
   const service = getServiceSupabase();
   const { data: conn, error } = await service
     .from("pinterest_connections")
@@ -115,33 +128,70 @@ export async function getValidPinterestToken(userId: string): Promise<string> {
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!conn) throw new Error("Pinterest is not connected for this account");
+  if (!conn) throw new PinterestAuthError("Pinterest is not connected for this account");
 
   const expiresAt = conn.token_expires_at ? new Date(conn.token_expires_at).getTime() : 0;
   const nearlyExpired = expiresAt - Date.now() < 5 * 60_000; // refresh with 5 min to spare
-  if (!nearlyExpired) return conn.access_token;
+  // `forceRefresh` bypasses the expiry check — used by withPinterestToken when
+  // Pinterest 401s a token the DB still considers valid (revoked, scope
+  // change, app-environment switch): the stored expiry can't be trusted then.
+  if (!nearlyExpired && !opts?.forceRefresh) return conn.access_token;
+
+  const existing = refreshInFlight.get(userId);
+  if (existing) return existing;
 
   if (!conn.refresh_token) {
-    throw new Error(
+    throw new PinterestAuthError(
       "Pinterest access token expired and no refresh token is available — reconnect Pinterest",
     );
   }
 
-  const refreshed = await refreshAccessToken(conn.refresh_token).catch((e) => {
-    throw new Error(
-      `Pinterest token refresh failed: ${e instanceof Error ? e.message : e}. Reconnect Pinterest from Settings.`,
-    );
-  });
-  const newExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
-  const { error: updErr } = await service
-    .from("pinterest_connections")
-    .update({
-      access_token: refreshed.access_token,
-      refresh_token: refreshed.refresh_token ?? conn.refresh_token,
-      token_expires_at: newExpiresAt,
-    })
-    .eq("user_id", userId);
-  if (updErr) throw new Error(updErr.message);
+  const promise = (async () => {
+    const refreshed = await refreshAccessToken(conn.refresh_token!).catch((e) => {
+      throw new PinterestAuthError(
+        `Pinterest token refresh failed: ${e instanceof Error ? e.message : e}. Reconnect Pinterest from Settings.`,
+      );
+    });
+    const newExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
+    const { error: updErr } = await service
+      .from("pinterest_connections")
+      .update({
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token ?? conn.refresh_token,
+        token_expires_at: newExpiresAt,
+      })
+      .eq("user_id", userId);
+    if (updErr) throw new Error(updErr.message);
 
-  return refreshed.access_token;
+    return refreshed.access_token;
+  })().finally(() => {
+    refreshInFlight.delete(userId);
+  });
+  refreshInFlight.set(userId, promise);
+  return promise;
+}
+
+// Run a Pinterest API call with a valid token, recovering from the one case
+// getValidPinterestToken can't see coming: Pinterest rejecting a token BEFORE
+// its recorded expiry (user revoked access, scope change, sandbox↔production
+// switch). On a 401 the token is force-refreshed once and `fn` retried with
+// the fresh one; a second 401 — or a failed/impossible refresh — propagates
+// as a PinterestAuthError, at which point only reconnecting from Settings can
+// help. Concurrent 401s for the same user (e.g. the analytics page's three
+// parallel calls) coalesce into a single refresh via refreshInFlight above.
+export async function withPinterestToken<T>(
+  userId: string,
+  fn: (accessToken: string) => Promise<T>,
+): Promise<T> {
+  const token = await getValidPinterestToken(userId);
+  try {
+    return await fn(token);
+  } catch (e) {
+    if (!(e instanceof PinterestAuthError)) throw e;
+    const fresh = await getValidPinterestToken(userId, { forceRefresh: true });
+    // Refresh handed back the exact token Pinterest just rejected — retrying
+    // with it would just 401 again.
+    if (fresh === token) throw e;
+    return fn(fresh);
+  }
 }

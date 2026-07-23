@@ -1,12 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Loader2, Save, User as UserIcon, ImagePlus, Link2 } from "lucide-react";
 import { startPinterestOAuth } from "@/lib/pinterest-oauth.functions";
+import { getFriendlyMessage } from "@/lib/friendly-error";
 
 export const Route = createFileRoute("/_authenticated/profile")({
   component: ProfilePage,
@@ -23,25 +25,32 @@ function ProfilePage() {
   const [pinterestUsername, setPinterestUsername] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [connected, setConnected] = useState(false);
+  const [avatarLoaded, setAvatarLoaded] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const { data: pinCount } = useQuery({
-    queryKey: ["pin-count"],
+    queryKey: ["pin-count", userId],
     queryFn: async () => {
       const { count } = await supabase
         .from("pins")
         .select("*", { count: "exact", head: true })
+        .eq("user_id", userId!)
         .eq("is_owner", true);
       return count ?? 0;
     },
+    enabled: !!userId,
   });
   const { data: storefrontCount } = useQuery({
-    queryKey: ["sf-count"],
+    queryKey: ["sf-count", userId],
     queryFn: async () => {
       const { count } = await supabase
         .from("storefronts")
-        .select("*", { count: "exact", head: true });
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId!);
       return count ?? 0;
     },
+    enabled: !!userId,
   });
 
   useEffect(() => {
@@ -71,7 +80,12 @@ function ProfilePage() {
 
   async function save() {
     if (!userId) return;
-    if (displayName.trim().length < 2) return toast.error("Enter your name");
+    if (displayName.trim().length < 2) {
+      setNameError("Enter your name (min 2 characters)");
+      nameInputRef.current?.focus();
+      return toast.error("Enter your name");
+    }
+    setNameError(null);
     setSaving(true);
     const { error } = await supabase
       .from("profiles")
@@ -81,7 +95,7 @@ function ProfilePage() {
       })
       .eq("id", userId);
     setSaving(false);
-    if (error) return toast.error(error.message);
+    if (error) return toast.error(getFriendlyMessage(error));
     toast.success("Profile updated");
   }
 
@@ -105,13 +119,22 @@ function ProfilePage() {
     .toUpperCase();
 
   return (
-    <AppShell title="Profile">
-      <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 md:px-0">
+    <AppShell title="Profile" backButton backTo="/dashboard">
+      <div className="mx-auto max-w-2xl space-y-6">
         <div className="rounded-2xl border border-border bg-surface/85 p-6 shadow-elevate">
           <div className="flex items-center gap-4">
             <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-primary text-primary-foreground shadow-glow">
               {avatarUrl ? (
-                <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                <img
+                  key={avatarUrl}
+                  src={avatarUrl}
+                  alt=""
+                  loading="lazy"
+                  onLoad={() => setAvatarLoaded(true)}
+                  className={`h-full w-full object-cover opacity-0 transition-opacity duration-300 ${
+                    avatarLoaded ? "opacity-100" : ""
+                  }`}
+                />
               ) : (
                 <span className="font-display text-xl font-bold">{initials}</span>
               )}
@@ -132,19 +155,37 @@ function ProfilePage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…
+            <div className="mt-6 space-y-4">
+              <div className="flex items-center gap-4">
+                <Skeleton className="h-16 w-16 rounded-full" />
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-3 w-24" />
+                </div>
+              </div>
+              <Skeleton className="h-11 w-full rounded-xl" />
+              <Skeleton className="h-11 w-full rounded-xl" />
+              <Skeleton className="h-11 w-full rounded-2xl" />
             </div>
           ) : (
             <div className="mt-6 space-y-4">
-              <Field label="Display name" icon={UserIcon}>
-                <input
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full bg-transparent py-2 text-sm outline-none"
-                  placeholder="Your name"
-                />
-              </Field>
+              <div>
+                <Field label="Display name" icon={UserIcon}>
+                  <input
+                    ref={nameInputRef}
+                    value={displayName}
+                    onChange={(e) => {
+                      setDisplayName(e.target.value);
+                      setNameError(null);
+                    }}
+                    className="w-full bg-transparent py-2 text-sm outline-none"
+                    placeholder="Your name"
+                  />
+                </Field>
+                {nameError && (
+                  <p className="mt-1 text-xs font-medium text-destructive">{nameError}</p>
+                )}
+              </div>
               {connected ? (
                 <Field label="Pinterest username" icon={UserIcon}>
                   <span className="w-full py-2 text-sm text-muted-foreground">
@@ -168,7 +209,10 @@ function ProfilePage() {
               <Field label="Avatar URL" icon={ImagePlus}>
                 <input
                   value={avatarUrl}
-                  onChange={(e) => setAvatarUrl(e.target.value)}
+                  onChange={(e) => {
+                    setAvatarUrl(e.target.value);
+                    setAvatarLoaded(false);
+                  }}
                   className="w-full bg-transparent py-2 text-sm outline-none"
                   placeholder="https://…"
                 />

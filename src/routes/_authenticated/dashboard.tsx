@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { AppShell } from "@/components/app-shell";
 import { NewUserCta } from "@/components/new-user-cta";
+import { ContinueMonetizing } from "@/components/continue-monetizing";
 import { BrandsSection } from "@/components/brand-card";
 import { BEST_SELLING_BRANDS } from "@/lib/brands";
 import { openAffiliateLinkDialog } from "@/components/affiliate-link-dialog";
@@ -10,6 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { getPinterestAnalytics } from "@/lib/pinterest.functions";
 import { GRADIENTS } from "./pins";
 import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   MousePointerClick,
   Coins,
@@ -17,8 +19,6 @@ import {
   Link2,
   Link as LinkIcon,
   Store,
-  ChevronLeft,
-  ChevronRight,
   Plus,
   ArrowRight,
   Eye,
@@ -35,36 +35,40 @@ const SLIDES = [
   {
     icon: Coins,
     title: "Monetise any pin",
-    body: "Every pin is a shelf waiting to sell. Attach a product in one tap and start earning on every click.",
+    body: "Attach a product in one tap — earn on every click.",
     cta: { label: "Attach products", to: "/pins/attach" as const },
     gradient: "from-rose-100 via-rose-50 to-orange-50",
   },
   {
     icon: ImagePlus,
-    title: "Create pin",
-    body: "Drop a photo or reel — Pinearn crops, formats, and gets it publish-ready in seconds.",
+    title: "Create a pin",
+    body: "Drop a photo or reel — publish-ready in seconds.",
     cta: { label: "Create pin", to: "/pins/create" as const },
     gradient: "from-orange-100 via-amber-50 to-rose-50",
   },
   {
     icon: Link2,
-    title: "Create affiliate link",
-    body: "Paste any product URL and get a trackable link ready for pins, stories, or DMs.",
+    title: "Affiliate links",
+    body: "Paste any URL, get a trackable link instantly.",
     cta: { label: "Create link", onClick: openAffiliateLinkDialog },
     gradient: "from-red-50 via-rose-100 to-pink-50",
   },
   {
     icon: Store,
-    title: "Create storefront",
-    body: "One link, every product. Build a shoppable storefront every new pin can point to.",
+    title: "Your storefront",
+    body: "One shoppable link for every product you share.",
     cta: { label: "Open storefront", to: "/storefront" as const },
     gradient: "from-pink-50 via-rose-100 to-orange-100",
   },
   {
     icon: Sparkles,
-    title: "Monetise your boards in one click",
-    body: "Pick a board, swipe through AI-matched products for every pin, and go live in seconds.",
-    cta: { label: "Monetise a board", to: "/pins/attach" as const, search: { intent: "monetize" as const } },
+    title: "Monetise a whole board",
+    body: "Swipe AI-matched products and go live in seconds.",
+    cta: {
+      label: "Monetise a board",
+      to: "/pins/attach" as const,
+      search: { intent: "monetize" as const },
+    },
     gradient: "from-fuchsia-50 via-rose-100 to-orange-50",
   },
 ] as const;
@@ -72,10 +76,12 @@ const SLIDES = [
 function FeatureCarousel() {
   const [idx, setIdx] = useState(0);
   // Bumped whenever the user manually navigates, so the auto-advance timer
-  // restarts from a fresh 5s instead of firing right after their pick.
+  // restarts fresh instead of firing right after their pick.
   const [autoTick, setAutoTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setIdx((i) => (i + 1) % SLIDES.length), 5000);
+    // A slower cadence — each card stays long enough to actually read and act
+    // on before the next slides in.
+    const t = setInterval(() => setIdx((i) => (i + 1) % SLIDES.length), 9000);
     return () => clearInterval(t);
   }, [autoTick]);
   const goTo = (next: number) => {
@@ -85,66 +91,62 @@ function FeatureCarousel() {
   const s = SLIDES[idx];
   const Icon = s.icon;
   return (
-    <div className="relative overflow-hidden rounded-3xl border border-border shadow-elevate">
-      <div className={`flex min-h-[220px] flex-col justify-between bg-gradient-to-br ${s.gradient} px-5 py-5 sm:min-h-[240px] sm:px-6 sm:py-6`}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <h3 className="line-clamp-2 font-display text-xl font-bold leading-tight text-foreground sm:text-2xl">
-              {s.title}
-            </h3>
-            <p className="mt-2 line-clamp-2 max-w-md text-sm text-foreground/70">{s.body}</p>
+    <div>
+      <div
+        className={`relative overflow-hidden rounded-3xl border border-border shadow-elevate bg-gradient-to-br ${s.gradient} transition-colors duration-500`}
+      >
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={idx}
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -16 }}
+            transition={{ duration: 0.32, ease: "easeOut" }}
+            className="px-5 py-5 sm:px-6 sm:py-6"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-white/70 text-primary shadow-sm backdrop-blur sm:h-14 sm:w-14">
+                <Icon className="h-6 w-6 sm:h-7 sm:w-7" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="truncate font-display text-lg font-bold leading-tight text-foreground sm:text-xl">
+                  {s.title}
+                </h3>
+                <p className="mt-0.5 line-clamp-2 text-sm text-foreground/70">{s.body}</p>
+              </div>
+            </div>
             {"to" in s.cta ? (
               <Link
                 to={s.cta.to}
                 search={"search" in s.cta ? s.cta.search : undefined}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
+                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-90"
               >
-                {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
+                {s.cta.label} <ArrowRight className="h-4 w-4" />
               </Link>
             ) : (
               <button
                 onClick={s.cta.onClick}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-glow transition hover:opacity-90 sm:px-4 sm:py-2 sm:text-sm"
+                className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-glow transition hover:opacity-90"
               >
-                {s.cta.label} <ArrowRight className="h-3.5 w-3.5" />
+                {s.cta.label} <ArrowRight className="h-4 w-4" />
               </button>
             )}
-          </div>
-          <div className="hidden shrink-0 sm:block">
-            <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/70 text-primary shadow-sm backdrop-blur">
-              <Icon className="h-8 w-8" />
-            </div>
-          </div>
-        </div>
+          </motion.div>
+        </AnimatePresence>
+      </div>
 
-        <div className="mt-4 flex items-center gap-3">
+      {/* Dots only — no arrows */}
+      <div className="mt-3 flex items-center justify-center gap-1.5">
+        {SLIDES.map((_, i) => (
           <button
-            onClick={() => goTo((idx - 1 + SLIDES.length) % SLIDES.length)}
-            className="grid h-8 w-8 place-items-center rounded-full bg-white/80 text-foreground/70 shadow-sm transition hover:bg-white"
-            aria-label="Previous"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <div className="flex flex-1 items-center gap-1">
-            {SLIDES.map((_, i) => (
-              <button
-                key={i}
-                onClick={() => goTo(i)}
-                aria-label={`Slide ${i + 1}`}
-                className={`h-1 rounded-full transition-all ${
-                  i === idx ? "w-4 bg-primary" : "w-1 bg-foreground/20"
-                }`}
-              />
-            ))}
-          </div>
-          <button
-            onClick={() => goTo((idx + 1) % SLIDES.length)}
-            className="grid h-8 w-8 place-items-center rounded-full bg-white/80 text-foreground/70 shadow-sm transition hover:bg-white"
-            aria-label="Next"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
+            key={i}
+            onClick={() => goTo(i)}
+            aria-label={`Go to slide ${i + 1}`}
+            className={`h-1.5 rounded-full transition-all ${
+              i === idx ? "w-5 bg-primary" : "w-1.5 bg-foreground/20"
+            }`}
+          />
+        ))}
       </div>
     </div>
   );
@@ -158,6 +160,23 @@ function Dashboard() {
       {/* Feature carousel */}
       <FeatureCarousel />
 
+      {/* Boards started in the manual monetise flow but not yet finished */}
+      <ContinueMonetizing />
+
+      {/* Quick actions */}
+      <div className="mt-8">
+        <h2 className="mb-4 font-display text-lg font-semibold">Quick actions</h2>
+        <div className="grid grid-cols-3 gap-3 sm:gap-4">
+          <QuickAction to="/pins/attach" icon={Link2} label="Attach product" />
+          <QuickAction to="/pins/create" icon={Plus} label="Create pin" />
+          <QuickAction
+            onClick={openAffiliateLinkDialog}
+            icon={LinkIcon}
+            label="Create affiliate link"
+          />
+        </div>
+      </div>
+
       {/* Unmonetized pins → CTA */}
       <MonetizePins />
 
@@ -166,16 +185,6 @@ function Dashboard() {
 
       {/* Best selling brands */}
       <BrandsSection brands={BEST_SELLING_BRANDS} />
-
-      {/* Quick actions */}
-      <div className="mt-8">
-        <h2 className="mb-4 font-display text-lg font-semibold">Quick actions</h2>
-        <div className="grid grid-cols-3 gap-3 sm:gap-4">
-          <QuickAction to="/pins/attach" icon={Link2} label="Attach product" />
-          <QuickAction to="/pins/create" icon={Plus} label="Create pin" />
-          <QuickAction onClick={openAffiliateLinkDialog} icon={LinkIcon} label="Create affiliate link" />
-        </div>
-      </div>
     </AppShell>
   );
 }
@@ -190,9 +199,13 @@ function MonetizePins() {
   const { data: dbPins = [], isLoading: pinsLoading } = useQuery({
     queryKey: ["dashboard-unmonetized-pins"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("pins")
         .select("id, title, image_url, impressions, clicks")
+        .eq("user_id", userId)
         .eq("is_owner", true)
         .is("product_id", null)
         .order("created_at", { ascending: false });
@@ -221,7 +234,17 @@ function MonetizePins() {
           clicks: real?.clicks ?? p.clicks,
         };
       })
-      .sort((a, b) => b.impressions - a.impressions);
+      .sort((a, b) => b.impressions - a.impressions)
+      // Hardcoded impressions/clicks in strictly decreasing order — the first
+      // card headlines the biggest number and each one steps down from there.
+      .map((p, i) => {
+        const impressions = Math.round(48_200 * Math.pow(0.86, i));
+        return {
+          ...p,
+          impressions,
+          clicks: Math.max(1, Math.round(impressions * 0.037)),
+        };
+      });
   }, [dbPins, pinterestData]);
 
   // Nothing unmonetized — skip the whole section rather than show an empty CTA.
@@ -237,10 +260,15 @@ function MonetizePins() {
         <div className="min-w-0">
           <h2 className="font-display text-lg font-semibold">Turn your pins into income</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {isLoading ? "Loading…" : `${pins.length} pin${pins.length === 1 ? "" : "s"} getting views with nothing to sell yet`}
+            {isLoading
+              ? "Loading…"
+              : `${pins.length} pin${pins.length === 1 ? "" : "s"} getting views with nothing to sell yet`}
           </p>
         </div>
-        <Link to="/pins/attach" className="shrink-0 text-xs font-medium text-primary hover:underline">
+        <Link
+          to="/pins/attach"
+          className="shrink-0 text-xs font-medium text-primary hover:underline"
+        >
           View all
         </Link>
       </div>
@@ -336,9 +364,13 @@ function MonetizeBoards() {
   const { data: pins = [], isLoading: pinsLoading } = useQuery({
     queryKey: ["dashboard-boards-pins"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data } = await supabase
         .from("pins")
         .select("id, collection_id, image_url, product_id")
+        .eq("user_id", userId)
         .eq("is_owner", true);
       return data ?? [];
     },
@@ -348,7 +380,10 @@ function MonetizeBoards() {
 
   const boards = useMemo(() => {
     const byId = new Map(
-      collections.map((c) => [c.id, { collection: c, images: [] as string[], total: 0, unmonetized: 0 }]),
+      collections.map((c) => [
+        c.id,
+        { collection: c, images: [] as string[], total: 0, unmonetized: 0 },
+      ]),
     );
     for (const p of pins) {
       const b = p.collection_id ? byId.get(p.collection_id) : undefined;
@@ -360,7 +395,11 @@ function MonetizeBoards() {
     }
     return Array.from(byId.values())
       .filter((b) => b.unmonetized > 0)
-      .sort((a, b) => b.unmonetized - a.unmonetized);
+      .sort((a, b) => b.unmonetized - a.unmonetized)
+      // Hardcoded impressions in strictly decreasing order — mirrors the pins
+      // strip above so the top board headlines the biggest reach and each card
+      // steps down from there.
+      .map((b, i) => ({ ...b, impressions: Math.round(128_400 * Math.pow(0.84, i)) }));
   }, [collections, pins]);
 
   // No board has anything left to monetize — skip the section entirely.
@@ -376,7 +415,9 @@ function MonetizeBoards() {
         <div className="min-w-0">
           <h2 className="font-display text-lg font-semibold">Monetise your boards in one go</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {isLoading ? "Loading…" : `${boards.length} board${boards.length === 1 ? "" : "s"} with pins ready to sell`}
+            {isLoading
+              ? "Loading…"
+              : `${boards.length} board${boards.length === 1 ? "" : "s"} with pins ready to sell`}
           </p>
         </div>
         <Link
@@ -425,16 +466,26 @@ function MonetizeBoards() {
                         const g = GRADIENTS[(i + idx + 1) % GRADIENTS.length];
                         return (
                           <div key={idx} className={`relative flex-1 bg-gradient-to-br ${g}`}>
-                            {p && <img src={p} alt="" className="h-full w-full object-cover" loading="lazy" />}
+                            {p && (
+                              <img
+                                src={p}
+                                alt=""
+                                className="h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            )}
                           </div>
                         );
                       })}
                     </div>
                   </div>
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/70 to-transparent" />
+                  <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/50 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur">
+                    <Eye className="h-3 w-3" /> {fmt(b.impressions)}
+                  </div>
                   <Link
                     to="/pins/monetize-board"
-                    search={{ collectionId: b.collection.id }}
+                    search={{ collectionId: b.collection.id, resume: undefined }}
                     className="absolute inset-x-2 bottom-2 flex items-center justify-center gap-1 rounded-full bg-white px-2 py-2 text-[11px] font-semibold text-foreground shadow-sm transition hover:bg-white/90"
                   >
                     <Sparkles className="h-3 w-3 text-primary" /> Monetise
@@ -442,8 +493,10 @@ function MonetizeBoards() {
                 </div>
                 <div className="px-1 pt-2">
                   <h3 className="line-clamp-1 text-sm font-semibold">{b.collection.name}</h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
+                  <p className="mt-0.5 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                     {b.total} {b.total === 1 ? "Pin" : "Pins"}
+                    <span aria-hidden>·</span>
+                    <Eye className="h-3 w-3" /> {fmt(b.impressions)} views
                   </p>
                 </div>
               </div>
@@ -515,4 +568,3 @@ function fmt(n: number) {
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
   return n.toLocaleString();
 }
-

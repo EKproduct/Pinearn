@@ -23,6 +23,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AffiliateLinkDialog, openAffiliateLinkDialog } from "@/components/affiliate-link-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const NAV = [
   { to: "/dashboard", label: "Home", icon: Home },
@@ -36,8 +37,10 @@ export function AppShell({
   subtitle,
   actions,
   inlineActions,
-  showBack,
   backButton,
+  backTo,
+  backSearch,
+  onBack,
   greetingName,
   hideBottomNav,
   children,
@@ -46,8 +49,17 @@ export function AppShell({
   subtitle?: string;
   actions?: ReactNode;
   inlineActions?: boolean;
-  showBack?: boolean;
   backButton?: boolean;
+  // Explicit parent route for the back button. When set, the back button
+  // navigates here instead of `history.back()` — so back is deterministic
+  // regardless of how the user reached the page (deep link, redirect, or a
+  // different entry point). `backSearch` supplies its search params.
+  backTo?: string;
+  backSearch?: Record<string, unknown>;
+  // Full override: when set, the back button calls this instead of navigating.
+  // Used by pages with in-memory sub-views (e.g. the board overview inside the
+  // review flow), where "back" should swap the view, not leave the page.
+  onBack?: () => void;
   greetingName?: boolean;
   hideBottomNav?: boolean;
   children: ReactNode;
@@ -58,7 +70,19 @@ export function AppShell({
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data: me } = useQuery({
+  // Back navigation: an explicit override wins, then the explicit parent
+  // route, then browser history.
+  const goBack = () => {
+    if (onBack) {
+      onBack();
+    } else if (backTo) {
+      navigate({ to: backTo, search: backSearch ?? {} } as never);
+    } else {
+      history.back();
+    }
+  };
+
+  const { data: me, isPending: meLoading } = useQuery({
     queryKey: ["me-shell"],
     queryFn: async () => {
       const { data: u } = await supabase.auth.getUser();
@@ -106,6 +130,7 @@ export function AppShell({
             connected={!!me?.pinterest_connected}
             initials={initials}
             avatar={me?.avatar_url ?? undefined}
+            loading={meLoading}
           />
 
           <nav className="mt-6 flex-1 space-y-1">
@@ -148,10 +173,10 @@ export function AppShell({
         <main className="min-w-0 flex-1 pb-24 md:pb-0">
           {/* Top app bar */}
           <header className="sticky top-0 z-30 border-b border-border/60 bg-background/85 backdrop-blur-xl">
-            <div className="safe-top flex items-center gap-3 px-4 pb-3 pt-3 sm:px-6 md:px-10 md:pt-4">
+            <div className="safe-top flex items-center gap-3 px-5 pb-3 pt-3 sm:px-6 md:px-10 md:pt-4">
               {backButton ? (
                 <button
-                  onClick={() => history.back()}
+                  onClick={goBack}
                   className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground"
                   aria-label="Back"
                 >
@@ -164,22 +189,20 @@ export function AppShell({
                   initials={initials}
                   avatar={me?.avatar_url ?? undefined}
                   onSignOut={signOut}
+                  loading={meLoading}
                 />
-              )}
-              {showBack && !backButton && (
-                <button
-                  onClick={() => history.back()}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground md:hidden"
-                  aria-label="Back"
-                >
-                  <ChevronLeft className="h-5 w-5" />
-                </button>
               )}
               <div className="min-w-0 flex-1">
                 {greetingName ? (
                   <>
                     <h1 className="truncate font-display text-[22px] font-bold leading-tight tracking-tight md:text-2xl">
-                      Hi, {firstName} 👋
+                      {meLoading ? (
+                        <>
+                          Hi, <Skeleton className="inline-block h-4 w-16 align-middle" /> 👋
+                        </>
+                      ) : (
+                        <>Hi, {firstName} 👋</>
+                      )}
                     </h1>
                   </>
                 ) : (
@@ -210,14 +233,13 @@ export function AppShell({
 
             {/* Actions row on mobile */}
             {actions && !inlineActions && (
-              <div className="no-scrollbar flex items-center gap-2 overflow-x-auto border-t border-border/60 px-4 py-2 sm:hidden">
+              <div className="no-scrollbar flex items-center gap-2 overflow-x-auto border-t border-border/60 px-5 py-2.5 sm:hidden">
                 {actions}
               </div>
             )}
-
           </header>
 
-          <div className="px-4 py-5 sm:px-6 sm:py-8 md:px-10">{children}</div>
+          <div className="px-5 py-6 sm:px-6 sm:py-8 md:px-10">{children}</div>
         </main>
       </div>
 
@@ -227,11 +249,23 @@ export function AppShell({
           <div className="safe-bottom relative mx-auto border-t border-border/60 bg-background/95 px-2 pt-2 backdrop-blur-xl">
             <div className="mx-auto grid max-w-md grid-cols-5 items-end">
               {NAV.slice(0, 2).map((n) => (
-                <BottomTab key={n.to} to={n.to} label={n.label} Icon={n.icon} active={pathname === n.to} />
+                <BottomTab
+                  key={n.to}
+                  to={n.to}
+                  label={n.label}
+                  Icon={n.icon}
+                  active={pathname === n.to}
+                />
               ))}
               <SpeedDial pathname={pathname} />
               {NAV.slice(2).map((n) => (
-                <BottomTab key={n.to} to={n.to} label={n.label} Icon={n.icon} active={pathname === n.to} />
+                <BottomTab
+                  key={n.to}
+                  to={n.to}
+                  label={n.label}
+                  Icon={n.icon}
+                  active={pathname === n.to}
+                />
               ))}
             </div>
           </div>
@@ -388,11 +422,7 @@ function BottomTab({
   active: boolean;
 }) {
   return (
-    <Link
-      to={to}
-      className="flex flex-col items-center gap-0.5 py-1.5"
-      aria-label={label}
-    >
+    <Link to={to} className="flex flex-col items-center gap-0.5 py-1.5" aria-label={label}>
       <Icon
         className={`h-6 w-6 transition ${active ? "text-primary" : "text-muted-foreground"}`}
         strokeWidth={active ? 2.4 : 1.8}
@@ -424,7 +454,9 @@ function useLocalPinAccounts(primary?: string | null) {
         setAccounts(parsed.accounts ?? []);
         setActiveId(parsed.activeId ?? "primary");
       }
-    } catch {}
+    } catch {
+      /* corrupt/missing localStorage value — fall back to defaults */
+    }
   }, []);
 
   function persist(next: PinAccount[], nextActive: string) {
@@ -459,12 +491,14 @@ function ProfileSwitcher({
   connected,
   initials,
   avatar,
+  loading,
 }: {
   name: string;
   handle?: string | null;
   connected: boolean;
   initials: string;
   avatar?: string;
+  loading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -492,14 +526,18 @@ function ProfileSwitcher({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 rounded-2xl border border-sidebar-border bg-surface p-3 text-left transition hover:bg-surface-2"
       >
-        <Avatar initials={initials} src={avatar} />
+        <Avatar initials={initials} src={avatar} loading={loading} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{name}</div>
-          <div className="truncate text-xs text-muted-foreground">
-            @{active.handle}
-          </div>
+          {loading ? (
+            <Skeleton className="h-4 w-16" />
+          ) : (
+            <div className="truncate text-sm font-semibold">{name}</div>
+          )}
+          <div className="truncate text-xs text-muted-foreground">@{active.handle}</div>
         </div>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground transition ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
       {open && (
@@ -555,12 +593,14 @@ function UserMenu({
   initials,
   avatar,
   onSignOut,
+  loading,
 }: {
   name: string;
   email?: string;
   initials: string;
   avatar?: string;
   onSignOut: () => void;
+  loading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -581,30 +621,45 @@ function UserMenu({
         className="grid h-10 w-10 place-items-center rounded-full ring-2 ring-border transition hover:ring-primary/40"
         aria-label="Account menu"
       >
-        <Avatar initials={initials} src={avatar} size={36} />
+        <Avatar initials={initials} src={avatar} size={36} loading={loading} />
       </button>
       {open && (
         <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-64 overflow-hidden rounded-2xl border border-border bg-surface p-2 shadow-elevate">
-
           <div className="flex items-center gap-3 rounded-xl bg-surface-2 p-3">
-            <Avatar initials={initials} src={avatar} />
+            <Avatar initials={initials} src={avatar} loading={loading} />
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">{name}</div>
+              {loading ? (
+                <Skeleton className="h-4 w-16" />
+              ) : (
+                <div className="truncate text-sm font-semibold">{name}</div>
+              )}
               {email && <div className="truncate text-xs text-muted-foreground">{email}</div>}
             </div>
           </div>
-          <MenuItem icon={UserIcon} label="Profile" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/profile" });
-          }} />
-          <MenuItem icon={Users} label="Switch profile" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/switch-profile" });
-          }} />
-          <MenuItem icon={Settings} label="Settings" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/settings" });
-          }} />
+          <MenuItem
+            icon={UserIcon}
+            label="Profile"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/profile" });
+            }}
+          />
+          <MenuItem
+            icon={Users}
+            label="Switch profile"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/switch-profile" });
+            }}
+          />
+          <MenuItem
+            icon={Settings}
+            label="Settings"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/settings" });
+            }}
+          />
           <div className="my-1 h-px bg-border/70" />
           <MenuItem icon={LogOut} label="Sign out" danger onClick={onSignOut} />
         </div>
@@ -637,7 +692,20 @@ function MenuItem({
   );
 }
 
-function Avatar({ initials, src, size = 40 }: { initials: string; src?: string; size?: number }) {
+function Avatar({
+  initials,
+  src,
+  size = 40,
+  loading,
+}: {
+  initials: string;
+  src?: string;
+  size?: number;
+  loading?: boolean;
+}) {
+  if (loading) {
+    return <Skeleton style={{ width: size, height: size }} className="rounded-full" />;
+  }
   if (src) {
     return (
       <img

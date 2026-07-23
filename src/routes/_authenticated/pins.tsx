@@ -3,7 +3,10 @@ import { AppShell } from "@/components/app-shell";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
+import { useScrollMorph } from "@/hooks/use-scroll-morph";
+import { PinScanOverlay, type ScanPhase } from "@/components/pin-scan-overlay";
 import {
   Plus,
   Link2,
@@ -12,17 +15,25 @@ import {
   Pin as PinIcon,
   X,
   Sparkles,
-  Wand2,
   Upload,
   Image as ImageIcon,
   Pencil,
-  Store,
   ArrowUpDown,
+  ClipboardPaste,
+  ArrowRight,
+  Grip,
 } from "lucide-react";
 import { toast } from "sonner";
-import { visualSearchPin } from "@/lib/pinterest.functions";
-import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
-import { hostBrand } from "@/lib/brands";
+import { visualSearchPin, takeDownPin, type CkResult } from "@/lib/pinterest.functions";
+import {
+  SuggestionCard,
+  ProgressiveSuggestionCard,
+  realProductPrice,
+} from "@/components/suggestion-card";
+import { EducationalLoader, HINTS } from "@/components/rotating-hint";
+import { hostBrand, estimateCommissionPct } from "@/lib/brands";
+import { CollectionAddFlow, AddFromCollectionButton } from "@/components/collection-picker";
+import { unreviewMonetizeProgressPin } from "@/lib/monetize-progress";
 
 type PinsSearch = { new?: 1; filter?: "drafts" };
 
@@ -85,6 +96,16 @@ export const RATIOS = [
   "aspect-[2/3]",
 ];
 
+export const CATEGORY_PILLS = [
+  "All",
+  "Top",
+  "Shirt",
+  "Pants",
+  "Art",
+  "Books",
+  "Accessories",
+] as const;
+
 function PinsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -110,9 +131,13 @@ function PinsPage() {
   const { data: pins = [], isLoading } = useQuery({
     queryKey: ["pins"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data, error } = await supabase
         .from("pins")
         .select("*")
+        .eq("user_id", userId)
         .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -148,20 +173,52 @@ function PinsPage() {
     queryFn: async () => {
       const { data } = await supabase
         .from("storefront_products")
-        .select("id,title,affiliate_url,image_url,price_cents,currency,commission_pct,storefront_id,collection_id");
+        .select(
+          "id,title,affiliate_url,image_url,price_cents,currency,commission_pct,storefront_id,collection_id",
+        );
       return (data ?? []) as Product[];
     },
   });
 
+  const runTakeDownPin = useServerFn(takeDownPin);
+  // "Delete" a live pin = take it down: the pin row survives and returns to
+  // the available-to-attach pool, its products detach, and it leaves the
+  // storefront + analytics. No pin is ever lost.
   const remove = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("pins").delete().eq("id", id);
-      if (error) throw error;
+    mutationFn: async (pin: Pin) => {
+      await runTakeDownPin({ data: { pinId: pin.id } });
+      return pin;
     },
-    onSuccess: () => {
+    onSuccess: (pin) => {
       qc.invalidateQueries({ queryKey: ["pins"] });
-      toast.success("Pin deleted");
+      qc.invalidateQueries({ queryKey: ["all-products"] });
+      // The pin's product just detached, so it's un-reviewed again as far as
+      // its board's "Continue monetising" progress is concerned.
+      if (pin.collection_id) unreviewMonetizeProgressPin(pin.collection_id);
+      toast.success("Pin taken down — back in available pins");
     },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  // "Delete all" = run the exact same take-down as the single-pin delete, once
+  // per pin currently shown. Every pin survives and returns to the
+  // available-to-attach pool; nothing is lost.
+  const removeAll = useMutation({
+    mutationFn: async (pinsToRemove: Pin[]) => {
+      for (const pin of pinsToRemove) {
+        await runTakeDownPin({ data: { pinId: pin.id } });
+      }
+      return pinsToRemove;
+    },
+    onSuccess: (removed) => {
+      qc.invalidateQueries({ queryKey: ["pins"] });
+      qc.invalidateQueries({ queryKey: ["all-products"] });
+      for (const pin of removed) {
+        if (pin.collection_id) unreviewMonetizeProgressPin(pin.collection_id);
+      }
+      toast.success(`${removed.length} pin${removed.length === 1 ? "" : "s"} taken down`);
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const visiblePins = useMemo(
@@ -188,9 +245,8 @@ function PinsPage() {
     <AppShell
       title="Pins"
       subtitle="Browse pins by collection, then match each one to affiliate products."
-      backButton
       actions={
-        pins.length > 0 &&
+        filtered.length > 0 &&
         (storefronts.length === 0 ? (
           <button
             disabled
@@ -223,13 +279,36 @@ function PinsPage() {
             count={draftsCount}
           />
         )}
+        {filtered.length > 0 && (
+          <button
+            onClick={() => {
+              if (
+                confirm(
+                  `Take down all ${filtered.length} ${collectionFilter} pin${
+                    filtered.length === 1 ? "" : "s"
+                  }? They go back to your available pins and their products are detached.`,
+                )
+              )
+                removeAll.mutate(filtered);
+            }}
+            disabled={removeAll.isPending}
+            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-red-500/40 bg-surface px-4 py-1.5 text-sm font-medium text-red-600 transition hover:bg-red-500/10 disabled:opacity-60"
+          >
+            {removeAll.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+            Delete all
+          </button>
+        )}
       </div>
-
 
       {openPin && (
         <PinDetailDialog
           pin={openPin}
           products={products}
+          collections={collections}
           onClose={() => setOpenPinId(null)}
         />
       )}
@@ -262,7 +341,9 @@ function PinsPage() {
                 {/* No forced aspect ratio — each pin renders at its own image's
                     real proportions, like native Pinterest masonry, instead of
                     being cropped into a standardized box. */}
-                <div className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}>
+                <div
+                  className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}
+                >
                   {p.image_url && (
                     <img src={p.image_url} alt="" className="block w-full h-auto" loading="lazy" />
                   )}
@@ -301,7 +382,12 @@ function PinsPage() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`Delete "${p.title}"?`)) remove.mutate(p.id);
+                        if (
+                          confirm(
+                            `Take down "${p.title}"? It goes back to your available pins and its products are detached.`,
+                          )
+                        )
+                          remove.mutate(p);
                       }}
                       aria-label="Delete"
                       className="grid h-8 w-8 place-items-center rounded-full bg-transparent text-white transition hover:bg-white/20 hover:text-red-300"
@@ -339,7 +425,8 @@ function FilterChip({
           : "border-border bg-surface text-muted-foreground hover:text-foreground"
       }`}
     >
-      {label} <span className={`ml-1 text-xs ${active ? "opacity-80" : "opacity-60"}`}>{count}</span>
+      {label}{" "}
+      <span className={`ml-1 text-xs ${active ? "opacity-80" : "opacity-60"}`}>{count}</span>
     </button>
   );
 }
@@ -359,9 +446,9 @@ function EmptyPins({ canCreate }: { canCreate: boolean }) {
       {canCreate && (
         <Link
           to="/pins/attach"
-          className="mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-glow"
+          className="mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-primary px-6 py-3.5 text-base font-semibold text-primary-foreground shadow-glow"
         >
-          <Plus className="h-4 w-4" /> Attach Products
+          <Plus className="h-5 w-5" /> Attach Products
         </Link>
       )}
     </div>
@@ -371,15 +458,34 @@ function EmptyPins({ canCreate }: { canCreate: boolean }) {
 export function PinDetailDialog({
   pin,
   products,
+  collections = [],
   onClose,
 }: {
   pin: Pin;
   products: Product[];
+  collections?: Collection[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const runVisualSearch = useServerFn(visualSearchPin);
+  // Closing the dialog (the ✕, backdrop, go-live — any unmount) terminates the
+  // matching pipeline: abort this pin's in-flight visual search and every
+  // product-details lookup its cards kicked off, so nothing keeps running in
+  // the background once the user has left.
+  useEffect(() => {
+    return () => {
+      void qc.cancelQueries({ queryKey: ["visual-search", pin.id] });
+      void qc.cancelQueries({ queryKey: ["product-details"] });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Scroll-linked morph: the big pin preview shrinks into the top-left header
+  // thumbnail as the results scroll down, and expands back on scroll up.
+  const scanScrollRef = useRef<HTMLDivElement>(null);
+  // Compact preview that shows the FULL pin (contain, not cropped). heroMaxHeight
+  // matches the box height below so the collapse math stays in sync.
+  const morph = useScrollMorph(scanScrollRef, { heroMaxHeight: 208 });
 
   // Suggested products from the same storefront/collection auto-checked.
   const storeProducts = useMemo(
@@ -396,38 +502,256 @@ export function PinDetailDialog({
   const [checked, setChecked] = useState<Set<string>>(initialAutoChecked);
   const [manualProductIds, setManualProductIds] = useState<Set<string>>(new Set());
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Manual entry lives in an "Add more" sheet now — never inline on the product
+  // page. `showCollection` swaps in the full-screen Add-from-Collection flow.
+  const [showAddMore, setShowAddMore] = useState(false);
+  const [showCollection, setShowCollection] = useState(false);
+  // Explicit display order for the selected products. Tokens: `a:<link>` for an
+  // AI pick, `p:<productId>` for a picked product. Driven by the inline grid
+  // drag; anything not listed keeps its natural order, appended after.
+  const [selectionOrder, setSelectionOrder] = useState<string[]>([]);
+  // Active product-tag tab (null = "All"). Tabs come from the object-detection
+  // components returned with the matches.
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  // Static category pills shown above the results — not wired to real
+  // filtering yet, just the fixed set of chips product asked for.
+  const [activeCategoryPill, setActiveCategoryPill] = useState<(typeof CATEGORY_PILLS)[number]>(
+    CATEGORY_PILLS[0],
+  );
   const [manualUrl, setManualUrl] = useState(
     pin.external_url && !pin.product_id ? pin.external_url : "",
   );
 
+  // When this dialog opened — bounds the auto-poll below.
+  const openedAtRef = useRef(Date.now());
   const {
     data: aiData,
     isFetching: aiLoading,
     refetch: refetchAI,
   } = useQuery({
     queryKey: ["visual-search", pin.id],
-    queryFn: async () => runVisualSearch({ data: { pinId: pin.id } }),
-    staleTime: 5 * 60_000,
+    queryFn: async ({ signal }) => runVisualSearch({ data: { pinId: pin.id }, signal }),
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+    // Object detection runs ~35s in the BACKGROUND on first view. Poll a few
+    // times (cheap — the match is cache-served until crops land) so the tabbed,
+    // per-component view appears on its own the moment detection finishes,
+    // instead of waiting for a manual Retry. Stop as soon as tags arrive, or
+    // after ~80s if detection produced none. Pins seen before are already
+    // tagged on the first response, so this never even fires for them.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const hasTags = !!data?.suggestions?.some((s) => s.tag);
+      if (hasTags) return false;
+      if (Date.now() - openedAtRef.current > 80_000) return false;
+      return 7_000;
+    },
   });
   const suggestions = aiData?.suggestions ?? [];
 
-  // Auto-check every AI suggestion the moment it arrives so its link
-  // gets picked up when the user publishes.
-  const [checkedAI, setCheckedAI] = useState<Set<number>>(new Set());
+  // Full-screen scan experience shown while the visual search runs. It resolves
+  // to `found` (brief success beat, then auto-dismiss to the matches) or
+  // `empty` (tells the user no match and points them at manual entry before
+  // they continue). `scanAck` = the overlay has been dismissed (auto or by tap).
+  const [scanAck, setScanAck] = useState(false);
+  // Revisiting a pin whose search is already cached — no scan to show, go
+  // straight to the attach screen. Runs once on mount.
   useEffect(() => {
-    if (suggestions.length > 0) {
-      setCheckedAI(new Set(suggestions.map((_, i) => i)));
-    }
-  }, [aiData]);
+    if (!aiLoading && aiData) setScanAck(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const scanPhase: ScanPhase | null = scanAck
+    ? null
+    : aiLoading
+      ? "scanning"
+      : suggestions.length > 0
+        ? "found"
+        : "empty";
+  // Once matches are in, hold the success beat briefly, then reveal them.
+  useEffect(() => {
+    if (scanPhase !== "found") return;
+    const t = setTimeout(() => setScanAck(true), 1000);
+    return () => clearTimeout(t);
+  }, [scanPhase]);
 
-
-  const toggleAI = (idx: number) =>
-    setCheckedAI((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
+  // Progressive rendering: `suggestions` paints immediately (image/title/
+  // source + Lens price, no CK wait) — each card resolves its own live
+  // price/stock independently via ProgressiveSuggestionCard and reports back
+  // here once settled. Never present in this map = still resolving; `null` =
+  // no price from CK or Lens at all (rare). Every match that settled with a
+  // price is pickable regardless of stock, and starts selected by default the
+  // instant it resolves (absence from `deselectedAILinks` means selected).
+  const [confirmedByLink, setConfirmedByLink] = useState<Map<string, CkResult>>(new Map());
+  const [deselectedAILinks, setDeselectedAILinks] = useState<Set<string>>(new Set());
+  const handleSuggestionSettled = (link: string, details: CkResult) => {
+    setConfirmedByLink((prev) => {
+      if (prev.has(link)) return prev;
+      const next = new Map(prev);
+      next.set(link, details);
       return next;
     });
+  };
+
+  const confirmedAIPicks = suggestions.flatMap((s) => {
+    const details = confirmedByLink.get(s.link);
+    if (!details || deselectedAILinks.has(s.link)) return [];
+    return [
+      {
+        title: s.title,
+        url: s.link,
+        image: s.thumbnail,
+        source: s.source,
+        price: {
+          value: `₹${details.discountedPrice.toLocaleString("en-IN")}`,
+          extractedValue: details.discountedPrice,
+          currency: "₹",
+        },
+      },
+    ];
+  });
+
+  const toggleAI = (link: string) =>
+    setDeselectedAILinks((prev) => {
+      const next = new Set(prev);
+      if (next.has(link)) next.delete(link);
+      else next.add(link);
+      return next;
+    });
+
+  // The single best earning rate across the matched retailers — headlines the
+  // results ("earn up to Y% per sale") so the value is obvious at a glance.
+  const topCommission = suggestions.length
+    ? Math.max(...suggestions.map((s) => estimateCommissionPct(s.source)))
+    : 0;
+
+  // Everything currently selected, as one flat list the Reorder dialog and the
+  // go-live payload both read from. AI picks first, then picked products — the
+  // natural order — unless `selectionOrder` overrides it.
+  const selectedItems = useMemo(() => {
+    const aiItems = confirmedAIPicks.map((a) => {
+      const pct = estimateCommissionPct(a.source);
+      return {
+        token: `a:${a.url}`,
+        title: a.title,
+        image: a.image,
+        source: a.source,
+        priceLabel: a.price.value,
+        earn: Math.round(a.price.extractedValue * (pct / 100)),
+      };
+    });
+    const prodItems = storeProducts
+      .filter((p) => checked.has(p.id))
+      .map((p) => {
+        const amount = p.price_cents != null ? p.price_cents / 100 : null;
+        const pct = p.commission_pct ?? estimateCommissionPct(hostBrand(p.affiliate_url));
+        return {
+          token: `p:${p.id}`,
+          title: p.title,
+          image: p.image_url,
+          source: hostBrand(p.affiliate_url),
+          priceLabel: amount != null ? `₹${amount.toLocaleString("en-IN")}` : null,
+          earn: amount != null ? Math.round(amount * (pct / 100)) : null,
+        };
+      });
+    return [...aiItems, ...prodItems];
+  }, [confirmedAIPicks, storeProducts, checked]);
+
+  const orderedSelection = useMemo(() => {
+    const rank = new Map(selectionOrder.map((t, i) => [t, i]));
+    // Stable sort: items with no explicit rank keep their natural relative order.
+    return [...selectedItems].sort(
+      (a, b) => (rank.get(a.token) ?? Infinity) - (rank.get(b.token) ?? Infinity),
+    );
+  }, [selectedItems, selectionOrder]);
+
+  // What the "N picked" chip shows — every product currently ticked, both AI
+  // matches (selected by default until deselected) and picked products, so it
+  // matches the checkmarks on screen. `confirmedAIPicks` alone undercounts,
+  // since it excludes matches still resolving their price and any picked
+  // products.
+  const pickedCount =
+    suggestions.filter((s) => !deselectedAILinks.has(s.link)).length +
+    storeProducts.filter((p) => checked.has(p.id)).length;
+
+  // Inline drag-reorder of the found-products grid: the on-screen order of the
+  // AI matches, driven by `selectionOrder`'s `a:` tokens. Dragging writes back
+  // into `selectionOrder` so the go-live order follows the grid exactly.
+  const orderedAiLinks = useMemo(() => {
+    const rank = new Map(
+      selectionOrder.filter((t) => t.startsWith("a:")).map((t, i) => [t.slice(2), i]),
+    );
+    return [...suggestions.map((s) => s.link)].sort(
+      (a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity),
+    );
+  }, [suggestions, selectionOrder]);
+  const onAiReorder = (links: string[]) => {
+    setSelectionOrder((prev) => [
+      ...links.map((l) => `a:${l}`),
+      ...prev.filter((t) => t.startsWith("p:")),
+    ]);
+  };
+
+  // Product-tag tabs (from object detection). Unique tags in first-seen order,
+  // each with its match count. Tabs only show when detection produced ≥2
+  // distinct components; otherwise the grid is just one list.
+  const tagByLink = useMemo(
+    () => new Map(suggestions.map((s) => [s.link, s.tag] as const)),
+    [suggestions],
+  );
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of suggestions) if (s.tag) m.set(s.tag, (m.get(s.tag) ?? 0) + 1);
+    return m;
+  }, [suggestions]);
+  const tags = useMemo(() => [...tagCounts.keys()], [tagCounts]);
+  // Keep the active tab valid as results change.
+  useEffect(() => {
+    if (activeTag && !tagCounts.has(activeTag)) setActiveTag(null);
+  }, [activeTag, tagCounts]);
+  const visibleAiLinks = useMemo(
+    () =>
+      activeTag ? orderedAiLinks.filter((l) => tagByLink.get(l) === activeTag) : orderedAiLinks,
+    [activeTag, orderedAiLinks, tagByLink],
+  );
+
+  // Remove a product from the "Add more" selected-list — deselect an AI pick or
+  // uncheck a picked product, keyed by its token.
+  const removeSelected = (token: string) => {
+    if (token.startsWith("a:")) {
+      setDeselectedAILinks((prev) => new Set(prev).add(token.slice(2)));
+    } else {
+      const id = token.slice(2);
+      setChecked((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  // Pick an existing collection product from the "Add more" sheet — mirror it
+  // into `manualProductIds` so it surfaces in the main Products list, and
+  // toggle its selection.
+  const toggleCollectionProduct = (id: string) => {
+    setManualProductIds((prev) => new Set(prev).add(id));
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.trim()) setManualUrl(text.trim());
+      else toast.error("Clipboard is empty");
+    } catch {
+      toast.error("Couldn't read clipboard — paste manually");
+    }
+  };
 
   const resolveExternal = () => {
     if (manualUrl.trim()) return manualUrl.trim();
@@ -436,34 +760,26 @@ export function PinDetailDialog({
       ? storeProducts.find((p) => p.id === firstProductId)
       : undefined;
     if (firstProduct?.affiliate_url) return firstProduct.affiliate_url;
-    const firstAI = Array.from(checkedAI)[0];
-    if (firstAI !== undefined && suggestions[firstAI]) {
-      return suggestions[firstAI].link;
-    }
+    if (confirmedAIPicks[0]) return confirmedAIPicks[0].url;
     return pin.external_url ?? null;
   };
 
   const goToPreview = () => {
-    if (checked.size === 0 && checkedAI.size === 0 && !manualUrl.trim()) {
+    if (checked.size === 0 && confirmedAIPicks.length === 0 && !manualUrl.trim()) {
       toast.error("Pick a product or paste a product link first.");
       return;
     }
     setPreviewLoading(true);
-    const aiPicks = Array.from(checkedAI)
-      .map((i) => suggestions[i])
-      .filter(Boolean)
-      .map((s) => ({
-        title: s.title,
-        url: s.link,
-        image: s.thumbnail,
-        source: s.source,
-        price: s.price,
-      }));
+    // Honour the Reorder order: emit productIds and aiPicks in the sequence the
+    // user arranged (falls back to natural order when never reordered).
+    const orderedTokens = orderedSelection.map((s) => s.token);
+    const productIds = orderedTokens.filter((t) => t.startsWith("p:")).map((t) => t.slice(2));
+    const aiPicks = orderedTokens
+      .filter((t) => t.startsWith("a:"))
+      .map((t) => confirmedAIPicks.find((a) => `a:${a.url}` === t))
+      .filter((a): a is (typeof confirmedAIPicks)[number] => !!a);
     try {
-      sessionStorage.setItem(
-        `pin-preview:${pin.id}`,
-        JSON.stringify({ productIds: Array.from(checked), aiPicks }),
-      );
+      sessionStorage.setItem(`pin-preview:${pin.id}`, JSON.stringify({ productIds, aiPicks }));
     } catch {
       /* ignore quota */
     }
@@ -478,7 +794,8 @@ export function PinDetailDialog({
       // "draft" means genuinely left midway — some product/link was picked
       // but Go Live was never hit. A pin nobody has touched yet (fresh from
       // Pinterest sync, nothing checked here) stays "new", not "draft".
-      const hasSelection = checked.size > 0 || checkedAI.size > 0 || manualUrl.trim() !== "";
+      const hasSelection =
+        checked.size > 0 || confirmedAIPicks.length > 0 || manualUrl.trim() !== "";
       // Closing/cancelling here is never the "Go Live" action — a pin only
       // goes live from the preview page's explicit Go Live button. Leaving
       // this dialog midway must never promote a pin to live; it also must
@@ -564,231 +881,527 @@ export function PinDetailDialog({
     onError: (e: Error) => toast.error(e.message),
   });
 
-
   const handleCancel = () => {
     saveDraft.mutate();
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-background/70 backdrop-blur sm:items-center sm:p-4"
-      onClick={handleCancel}
-    >
+    <>
+      <AnimatePresence>
+        {scanPhase && (
+          <PinScanOverlay
+            imageUrl={pin.image_url}
+            phase={scanPhase}
+            matchCount={suggestions.length}
+            onContinue={() => {
+              // No matches → land on the product page with the Add-more sheet
+              // already open so they can paste a link or pick from a collection.
+              setScanAck(true);
+              setShowAddMore(true);
+            }}
+            onSkip={() => {
+              setScanAck(true);
+              setShowAddMore(true);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative flex h-[92dvh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-elevate sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-2xl"
+        className="fixed inset-0 z-50 flex items-end justify-center bg-background/70 backdrop-blur sm:items-center sm:p-4"
+        onClick={handleCancel}
       >
-        {/* Sticky compact header with pin thumb */}
-        <div className="flex items-center gap-3 border-b border-border/60 bg-surface px-4 py-3">
-          <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-rose-500 to-pink-600">
-            {pin.image_url && (
-              <img src={pin.image_url} alt="" className="h-full w-full object-cover" />
-            )}
-            {aiLoading && (
-              <span className="pointer-events-none absolute inset-x-0 top-0 h-1/3 animate-scan bg-gradient-to-b from-primary/70 to-transparent" />
-            )}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <Sparkles className="h-3 w-3 text-primary" />
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
-                {aiLoading ? "Scanning pin…" : "Visual match"}
-              </span>
-            </div>
-            <h3 className="hidden">{pin.title}</h3>
-          </div>
-          <button
-            onClick={handleCancel}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4">
-          {/* Visual scan preview (big pin with scanning bar) */}
-          {pin.image_url && (
-            <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
-              <div className="relative mx-auto aspect-[4/5] max-h-72 w-full">
-                <img
-                  src={pin.image_url}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover"
-                />
-                {aiLoading && (
-                  <>
-                    <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
-                    <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
-                  </>
-                )}
-                <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-                  {aiLoading ? (
-                    <>
-                      <Loader2 className="h-3 w-3 animate-spin" /> Visual search…
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-3 w-3" /> {suggestions.length} matches
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Manual link */}
-          <div className="mt-6">
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Product link
-            </label>
-            <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-input bg-background px-3 py-2.5">
-              <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <input
-                type="url"
-                value={manualUrl}
-                onChange={(e) => setManualUrl(e.target.value)}
-                placeholder="Paste an affiliate link…"
-                className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => addProduct.mutate()}
-              disabled={addProduct.isPending || !manualUrl.trim()}
-              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/15 disabled:opacity-50"
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="relative flex h-[92dvh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-elevate sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-2xl"
+        >
+          {/* Compact header. The "Visual match" label fades out as you scroll
+            into the results, while the pin fades/scales into the top-centre as
+            the big preview below collapses — so the pin stays in view while
+            freeing the space it used to take. */}
+          <div className="relative flex items-center gap-3 border-b border-border/60 bg-surface px-4 py-3">
+            <motion.div
+              style={{ opacity: morph.heroOpacity }}
+              className="flex min-w-0 items-center gap-1.5"
             >
-              {addProduct.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-              Add product
+              <Sparkles className="h-3 w-3 shrink-0 text-primary" />
+              <span className="truncate text-[10px] font-semibold uppercase tracking-wide text-primary">
+                {aiLoading && suggestions.length === 0 ? "Scanning pin…" : "Visual match"}
+              </span>
+            </motion.div>
+
+            {pin.image_url && (
+              <motion.div
+                style={{ opacity: morph.thumbOpacity, scale: morph.thumbScale }}
+                className="pointer-events-none absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-gradient-to-br from-rose-500 to-pink-600 shadow-sm"
+              >
+                <img src={pin.image_url} alt="" className="h-full w-full object-cover" />
+              </motion.div>
+            )}
+
+            <button
+              onClick={handleCancel}
+              className="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
             </button>
           </div>
 
-          {/* Our Recommendations (AI) */}
-          <div className="mt-6 flex items-center justify-between">
-            <h5 className="flex items-center gap-1.5 text-sm font-semibold">
-              <Wand2 className="h-4 w-4 text-primary" />
-              Our Recommendation
-            </h5>
-            <div className="flex items-center gap-2">
-              {suggestions.length > 0 && (
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                  {checkedAI.size} picked
-                </span>
-              )}
-              <button
-                onClick={() => refetchAI()}
-                disabled={aiLoading}
-                className="rounded-full bg-surface-2 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground disabled:opacity-50"
+          {/* Scrollable body */}
+          <div
+            ref={scanScrollRef}
+            className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4"
+          >
+            {/* Visual scan preview (big pin with scanning bar). Its reserved
+              height collapses and the image shrinks/fades/lifts as the user
+              scrolls down — morphing into the top-left header thumbnail — and
+              reverses on scroll up. */}
+            {pin.image_url && (
+              <motion.div
+                style={{ height: morph.heroHeight, opacity: morph.heroOpacity }}
+                className="flex items-start justify-center overflow-hidden"
               >
-                {aiLoading ? "Scanning…" : "Retry"}
-              </button>
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            {aiLoading && suggestions.length === 0 ? (
-              Array.from({ length: 3 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="overflow-hidden rounded-xl border border-dashed border-border bg-surface-2/40"
+                {/* The box hugs the pin: image sets its own width from the box
+                  height, so it fills edge-to-edge with no letterboxing. */}
+                <motion.div
+                  style={{ scale: morph.heroScale, y: morph.heroY }}
+                  className="relative h-full origin-top overflow-hidden rounded-2xl border border-border shadow-sm"
                 >
-                  <div className="aspect-square w-full animate-pulse bg-surface-2/60" />
-                  <div className="space-y-1.5 p-2.5">
-                    <div className="h-2 w-1/3 animate-pulse rounded-full bg-muted" />
-                    <div className="h-2.5 w-4/5 animate-pulse rounded-full bg-muted" />
-                    <div className="h-5 w-full animate-pulse rounded-full bg-muted/70" />
-                  </div>
-                </div>
-              ))
+                  <img
+                    src={pin.image_url}
+                    alt=""
+                    className="h-full w-auto max-w-full object-cover"
+                  />
+                  {aiLoading && suggestions.length === 0 && (
+                    <>
+                      <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
+                      <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
+                    </>
+                  )}
+                </motion.div>
+              </motion.div>
+            )}
+
+            {/* Results — manual entry now lives in the "Add more" sheet, never
+              inline here. */}
+            {aiLoading && suggestions.length === 0 ? (
+              <div className="mt-6">
+                <EducationalLoader label="Finding matching products…" hints={HINTS.matching} />
+              </div>
             ) : suggestions.length === 0 ? (
-              <p className="col-span-full rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
-                No suggestions yet.
-              </p>
+              <div className="mt-6 rounded-2xl border border-dashed border-border bg-surface-2/40 p-6 text-center">
+                <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-amber-500/10 text-amber-600">
+                  <Sparkles className="h-5 w-5" />
+                </span>
+                <p className="mt-3 text-sm font-semibold">No matching products found</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Tap <span className="font-semibold text-primary">Add more</span> below to paste a
+                  link or pick from a collection.
+                </p>
+              </div>
             ) : (
-              suggestions.map((s, idx) => (
-                <SuggestionCard
-                  key={idx}
-                  title={s.title}
-                  thumbnail={s.thumbnail}
-                  source={s.source}
-                  link={s.link}
-                  price={s.price}
-                  selected={checkedAI.has(idx)}
-                  onToggle={() => toggleAI(idx)}
-                />
-              ))
+              <>
+                {/* Earnings-led header — centred and prominent */}
+                <div className="mt-6 text-center">
+                  <h5 className="font-display text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl">
+                    Found {suggestions.length} product{suggestions.length === 1 ? "" : "s"}
+                  </h5>
+                  <p className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5 text-base font-medium text-muted-foreground">
+                    Earn upto
+                    <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-3 py-0.5 text-base font-extrabold text-emerald-600">
+                      {topCommission}%
+                    </span>
+                    per sale
+                  </p>
+                </div>
+
+                {/* Static category pills. */}
+                <div className="no-scrollbar mt-4 -mx-1 flex items-center gap-2 overflow-x-auto px-1">
+                  {CATEGORY_PILLS.map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => setActiveCategoryPill(label)}
+                      className={`inline-flex shrink-0 items-center rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
+                        activeCategoryPill === label
+                          ? "bg-gradient-primary text-primary-foreground shadow-glow"
+                          : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Product-tag tabs — one per detected component. Below the pin,
+                    above the products. Only shown when detection found ≥2. */}
+                {tags.length >= 2 && (
+                  <div className="no-scrollbar mt-4 -mx-1 flex items-center gap-2 overflow-x-auto px-1">
+                    <TagTab
+                      label="All"
+                      count={suggestions.length}
+                      active={activeTag === null}
+                      onClick={() => setActiveTag(null)}
+                    />
+                    {tags.map((t) => (
+                      <TagTab
+                        key={t}
+                        label={t}
+                        count={tagCounts.get(t) ?? 0}
+                        active={activeTag === t}
+                        onClick={() => setActiveTag(t)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {/* Drag any card by its ⠿ handle to rearrange (All tab only);
+                    tapping elsewhere selects/deselects it. */}
+                {activeTag === null ? (
+                  <Reorder.Group
+                    as="div"
+                    axis="y"
+                    values={orderedAiLinks}
+                    onReorder={onAiReorder}
+                    className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3"
+                  >
+                    {orderedAiLinks.map((link) => {
+                      const s = suggestions.find((m) => m.link === link);
+                      if (!s) return null;
+                      return (
+                        <ReorderableCard key={link} value={link}>
+                          <ProgressiveSuggestionCard
+                            match={s}
+                            selected={!deselectedAILinks.has(link)}
+                            onToggle={() => toggleAI(link)}
+                            onSettled={handleSuggestionSettled}
+                          />
+                        </ReorderableCard>
+                      );
+                    })}
+                  </Reorder.Group>
+                ) : (
+                  <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                    {visibleAiLinks.map((link) => {
+                      const s = suggestions.find((m) => m.link === link);
+                      if (!s) return null;
+                      return (
+                        <ProgressiveSuggestionCard
+                          key={link}
+                          match={s}
+                          selected={!deselectedAILinks.has(link)}
+                          onToggle={() => toggleAI(link)}
+                          onSettled={handleSuggestionSettled}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Manually-added products — no heading; they simply join the grid. */}
+            {manualProductIds.size > 0 && (
+              <div className="mt-4">
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                  {storeProducts
+                    .filter((p) => manualProductIds.has(p.id))
+                    .map((p) => (
+                      <SuggestionCard
+                        key={p.id}
+                        title={p.title}
+                        thumbnail={p.image_url}
+                        source={hostBrand(p.affiliate_url)}
+                        link={p.affiliate_url}
+                        price={realProductPrice(p.price_cents)}
+                        commissionPct={p.commission_pct}
+                        selected={checked.has(p.id)}
+                        onToggle={() =>
+                          setChecked((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(p.id)) next.delete(p.id);
+                            else next.add(p.id);
+                            return next;
+                          })
+                        }
+                      />
+                    ))}
+                </div>
+              </div>
             )}
           </div>
 
-          {/* Products */}
-          {manualProductIds.size > 0 && (
-            <div className="mt-6">
-              <div className="flex items-center justify-between">
-                <h5 className="flex items-center gap-1.5 text-sm font-semibold">
-                  <Store className="h-4 w-4 text-primary" />
-                  Products
-                </h5>
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                  {manualProductIds.size} added
-                </span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-                {storeProducts
-                  .filter((p) => manualProductIds.has(p.id))
-                  .map((p) => (
-                    <SuggestionCard
-                      key={p.id}
-                      title={p.title}
-                      thumbnail={p.image_url}
-                      source={hostBrand(p.affiliate_url)}
-                      link={p.affiliate_url}
-                      price={realProductPrice(p.price_cents)}
-                      commissionPct={p.commission_pct}
-                      selected={checked.has(p.id)}
-                      onToggle={() =>
-                        setChecked((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(p.id)) next.delete(p.id);
-                          else next.add(p.id);
-                          return next;
-                        })
-                      }
-                    />
-                  ))}
-              </div>
-            </div>
-          )}
-
-        </div>
-
-
-        {/* Sticky footer */}
-        <div
-          className="flex items-center gap-2 border-t border-border/60 bg-surface px-4 py-3"
-          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
-        >
-          <button
-            onClick={goToPreview}
-            disabled={saveDraft.isPending}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-glow disabled:opacity-60"
+          {/* Sticky footer — Add more (outline) + Next (filled) */}
+          <div
+            className="flex items-center gap-3 border-t border-border/60 bg-surface px-4 py-3"
+            style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
           >
-            Next
-          </button>
-        </div>
-      </div>
-      {previewLoading && (
-        <div className="absolute inset-0 z-[60] grid place-items-center rounded-t-2xl bg-surface/80 backdrop-blur sm:rounded-2xl">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <span className="text-sm font-medium text-muted-foreground">Preparing preview…</span>
+            <button
+              onClick={() => {
+                setShowCollection(false);
+                setShowAddMore(true);
+              }}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-2xl border-2 border-primary bg-surface px-4 py-3 text-sm font-bold text-primary transition active:scale-[0.98]"
+            >
+              <Plus className="h-4 w-4" /> Add more
+            </button>
+            <button
+              onClick={goToPreview}
+              disabled={saveDraft.isPending}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98] disabled:opacity-60"
+            >
+              Next{pickedCount > 0 ? ` (${pickedCount})` : ""} <ArrowRight className="h-4 w-4" />
+            </button>
           </div>
         </div>
-      )}
-    </div>
+
+        {/* "Add more" bottom sheet — paste a link manually, or pick from a
+          collection. Opened from the footer or after a no-match scan. */}
+        <AnimatePresence>
+          {showAddMore && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-[55] flex items-end justify-center bg-background/60 backdrop-blur-sm sm:items-center sm:p-4"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAddMore(false);
+              }}
+            >
+              <motion.div
+                onClick={(e) => e.stopPropagation()}
+                initial={{ y: 40, opacity: 0.6 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: 40, opacity: 0 }}
+                transition={{ type: "spring", stiffness: 380, damping: 34 }}
+                className="w-full max-w-2xl rounded-t-3xl border border-border bg-surface p-5 shadow-elevate sm:rounded-3xl"
+                style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+              >
+                <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-border" />
+                <h3 className="font-display text-lg font-bold">Add products</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Paste an affiliate link, or pick a product from your collection.
+                </p>
+
+                {/* Paste a link */}
+                <div className="mt-4 flex items-center gap-2">
+                  <div className="flex flex-1 items-center gap-2 rounded-2xl border border-input bg-background px-3 py-3">
+                    <Link2 className="h-4 w-4 shrink-0 text-primary" />
+                    <input
+                      type="url"
+                      value={manualUrl}
+                      onChange={(e) => setManualUrl(e.target.value)}
+                      placeholder="Paste more links"
+                      className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={pasteFromClipboard}
+                    aria-label="Paste from clipboard"
+                    className="grid h-[46px] w-[46px] shrink-0 place-items-center rounded-2xl bg-emerald-500 text-white shadow-sm transition active:scale-95"
+                  >
+                    <ClipboardPaste className="h-5 w-5" />
+                  </button>
+                </div>
+                {/* Only appears once there's a link to add. */}
+                {manualUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => addProduct.mutate()}
+                    disabled={addProduct.isPending}
+                    className="mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {addProduct.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4" />
+                    )}
+                    Add link
+                  </button>
+                )}
+
+                {/* divider */}
+                <div className="my-4 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                  <span className="h-px flex-1 bg-border" /> or{" "}
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+
+                {/* Add from collection — full-screen: a Collections grid,
+                    then that collection's products. */}
+                <AddFromCollectionButton onClick={() => setShowCollection(true)} />
+
+                {showCollection && (
+                  <CollectionAddFlow
+                    products={storeProducts}
+                    pickedIds={checked}
+                    onTogglePicked={toggleCollectionProduct}
+                    onExit={() => setShowCollection(false)}
+                  />
+                )}
+
+                {/* Everything picked so far — reorder by dragging a row, or
+                    remove with ✕. */}
+                {orderedSelection.length > 0 && (
+                  <div className="mt-5">
+                    <p className="mb-2 text-xs font-semibold text-muted-foreground">
+                      {orderedSelection.length} selected
+                    </p>
+                    <Reorder.Group
+                      as="div"
+                      axis="y"
+                      values={orderedSelection.map((i) => i.token)}
+                      onReorder={setSelectionOrder}
+                      className="flex max-h-[34vh] flex-col gap-2 overflow-y-auto"
+                    >
+                      {orderedSelection.map((item) => (
+                        <Reorder.Item
+                          as="div"
+                          key={item.token}
+                          value={item.token}
+                          whileDrag={{ scale: 1.02, zIndex: 10 }}
+                          transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                          className="flex touch-none select-none items-center gap-2.5 rounded-2xl border border-border bg-surface p-2 shadow-sm active:cursor-grabbing"
+                        >
+                          <span className="grid h-7 w-6 shrink-0 cursor-grab place-items-center text-muted-foreground/60 active:cursor-grabbing">
+                            <Grip className="h-4 w-4" />
+                          </span>
+                          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-xl bg-surface-2">
+                            {item.image ? (
+                              <img src={item.image} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="grid h-full w-full place-items-center text-muted-foreground">
+                                <ImageIcon className="h-4 w-4" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                              {item.source}
+                            </p>
+                            <p className="truncate text-sm font-semibold leading-tight">
+                              {item.title}
+                            </p>
+                            <div className="mt-0.5 flex items-center gap-2">
+                              {item.priceLabel && (
+                                <span className="text-xs font-bold">{item.priceLabel}</span>
+                              )}
+                              {item.earn != null && (
+                                <span className="text-[11px] font-bold text-emerald-600">
+                                  Earn ₹{item.earn}/sale
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeSelected(item.token);
+                            }}
+                            aria-label="Remove"
+                            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground transition hover:bg-surface-2 hover:text-foreground"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </Reorder.Item>
+                      ))}
+                    </Reorder.Group>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddMore(false);
+                    goToPreview();
+                  }}
+                  className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3.5 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98]"
+                >
+                  Continue{pickedCount > 0 ? ` (${pickedCount})` : ""}
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {previewLoading && (
+          <div className="absolute inset-0 z-[60] grid place-items-center rounded-t-2xl bg-surface/80 backdrop-blur sm:rounded-2xl">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              <span className="text-sm font-medium text-muted-foreground">Preparing preview…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// One found-product card, made draggable in place. The ⠿ handle is the only
+// drag trigger (dragListener off) so tapping the card still selects/deselects;
+// pressing the handle starts the reorder.
+function TagTab({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
+        active
+          ? "bg-gradient-primary text-primary-foreground shadow-glow"
+          : "bg-surface-2 text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {label}
+      <span
+        className={`rounded-full px-1.5 text-[10px] font-bold ${
+          active ? "bg-white/25 text-primary-foreground" : "bg-foreground/10 text-foreground/70"
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+function ReorderableCard({ value, children }: { value: string; children: React.ReactNode }) {
+  const controls = useDragControls();
+  return (
+    <Reorder.Item
+      as="div"
+      value={value}
+      dragListener={false}
+      dragControls={controls}
+      whileDrag={{ scale: 1.04, zIndex: 30 }}
+      transition={{ type: "spring", stiffness: 500, damping: 40 }}
+      className="relative"
+    >
+      {children}
+      <span
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          controls.start(e);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        aria-label="Drag to reorder"
+        className="absolute right-2 top-2 z-20 grid h-7 w-7 cursor-grab touch-none place-items-center rounded-full bg-black/45 text-white shadow backdrop-blur transition hover:bg-black/65 active:cursor-grabbing"
+      >
+        <Grip className="h-3.5 w-3.5" />
+      </span>
+    </Reorder.Item>
   );
 }
 
@@ -907,9 +1520,7 @@ function NewPinDialog({
                 <div className="absolute inset-0 grid place-items-center text-primary-foreground/90">
                   <div className="flex flex-col items-center gap-2 text-center">
                     <ImageIcon className="h-8 w-8 opacity-90" />
-                    <span className="text-xs font-medium opacity-90">
-                      Upload or paste an image
-                    </span>
+                    <span className="text-xs font-medium opacity-90">Upload or paste an image</span>
                   </div>
                 </div>
               )}

@@ -1,7 +1,17 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronDown, Check, Link2, Plus, Search, Sparkles, MousePointerClick, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronDown,
+  Check,
+  Link2,
+  Plus,
+  Search,
+  Sparkles,
+  MousePointerClick,
+  X,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
@@ -13,7 +23,6 @@ import {
   type Collection,
   type Product,
 } from "./pins";
-
 
 type AttachSearch = { collection?: string; pinId?: string; intent?: "monetize" };
 
@@ -67,7 +76,9 @@ function AttachPage() {
   // specific pin) — jump straight to that pin's attach dialog, skipping the
   // pick-a-pin grid.
   const [dialogPinId, setDialogPinId] = useState<string | null>(search.pinId ?? null);
-  const [tab, setTab] = useState<Tab>(search.collection || search.intent === "monetize" ? "boards" : "pins");
+  const [tab, setTab] = useState<Tab>(
+    search.collection || search.intent === "monetize" ? "boards" : "pins",
+  );
   const [activeBoardId, setActiveBoardId] = useState<string | null>(search.collection ?? null);
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<SortBy>("");
@@ -78,13 +89,16 @@ function AttachPage() {
     search.collection ? "select-pin" : "ask",
   );
 
-
   const { data: pins = [], isLoading } = useQuery({
     queryKey: ["pins"],
     queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
       const { data, error } = await supabase
         .from("pins")
         .select("*")
+        .eq("user_id", userId)
         .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -112,13 +126,12 @@ function AttachPage() {
     queryFn: async () => {
       const { data } = await supabase
         .from("storefront_products")
-        .select("id,title,affiliate_url,image_url,price_cents,currency,commission_pct,storefront_id,collection_id");
+        .select(
+          "id,title,affiliate_url,image_url,price_cents,currency,commission_pct,storefront_id,collection_id",
+        );
       return (data ?? []) as Product[];
     },
   });
-
-
-
 
   const boards = useMemo(() => {
     const byId = new Map<string, { collection: Collection; pins: Pin[] }>();
@@ -150,7 +163,9 @@ function AttachPage() {
   // "Unassigned" is a synthetic bucket (pins with no collection_id), not a
   // real collection row — exclude it when picking a board to bulk-monetize.
   const selectableBoards =
-    search.intent === "monetize" ? boards.filter((b) => b.collection.id !== "__unassigned__") : boards;
+    search.intent === "monetize"
+      ? boards.filter((b) => b.collection.id !== "__unassigned__")
+      : boards;
 
   const visiblePins = useMemo(() => {
     const base = activeBoard ? activeBoard.pins : pins;
@@ -169,7 +184,7 @@ function AttachPage() {
 
   const openBoard = (id: string) => {
     if (search.intent === "monetize") {
-      navigate({ to: "/pins/monetize-board", search: { collectionId: id } });
+      navigate({ to: "/pins/monetize-board", search: { collectionId: id, resume: undefined } });
       return;
     }
     setActiveBoardId(id);
@@ -181,16 +196,17 @@ function AttachPage() {
       title="Select pin"
       subtitle="Pick a pin to attach products to."
       backButton
+      backTo="/pins"
       hideBottomNav
     >
       {dialogPin && (
         <PinDetailDialog
           pin={dialogPin}
           products={products}
+          collections={collections}
           onClose={() => setDialogPinId(null)}
         />
       )}
-
 
       {/* Pinterest-style tabs */}
       {!activeBoard && (
@@ -246,7 +262,7 @@ function AttachPage() {
                   onClick={() =>
                     navigate({
                       to: "/pins/monetize-board",
-                      search: { collectionId: activeBoard.collection.id },
+                      search: { collectionId: activeBoard.collection.id, resume: undefined },
                     })
                   }
                   className="flex flex-col items-start gap-2 rounded-2xl border border-border bg-surface p-5 text-left transition hover:shadow-elevate active:scale-[0.98]"
@@ -269,9 +285,18 @@ function AttachPage() {
             />
           ) : (
             <>
-              <SearchSortBar query={query} onQuery={setQuery} sortBy={sortBy} onSortBy={setSortBy} />
+              <SearchSortBar
+                query={query}
+                onQuery={setQuery}
+                sortBy={sortBy}
+                onSortBy={setSortBy}
+              />
               {visiblePins.length === 0 ? (
-                <EmptyBlock text={`No pins match "${query}".`} />
+                <EmptyBlock
+                  text={`No pins match "${query}".`}
+                  actionLabel="Clear search"
+                  onAction={() => setQuery("")}
+                />
               ) : (
                 <PinGrid pins={visiblePins} selectedId={selectedPinId} onToggle={togglePin} />
               )}
@@ -289,7 +314,11 @@ function AttachPage() {
           <div className="space-y-4">
             <SearchSortBar query={query} onQuery={setQuery} sortBy={sortBy} onSortBy={setSortBy} />
             {visiblePins.length === 0 ? (
-              <EmptyBlock text={`No pins match "${query}".`} />
+              <EmptyBlock
+                text={`No pins match "${query}".`}
+                actionLabel="Clear search"
+                onAction={() => setQuery("")}
+              />
             ) : (
               <PinGrid pins={visiblePins} selectedId={selectedPinId} onToggle={togglePin} />
             )}
@@ -304,7 +333,7 @@ function AttachPage() {
       {/* Sticky CTA once a pin is selected */}
       {selectedPinId && (
         <div
-          className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 px-4 py-3 backdrop-blur-xl"
+          className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 px-5 py-3 backdrop-blur-xl"
           style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
         >
           <div className="mx-auto flex max-w-2xl items-center gap-3">
@@ -358,13 +387,7 @@ function SearchSortBar({
   );
 }
 
-function SortDropdown({
-  value,
-  onChange,
-}: {
-  value: SortBy;
-  onChange: (v: SortBy) => void;
-}) {
+function SortDropdown({ value, onChange }: { value: SortBy; onChange: (v: SortBy) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -392,7 +415,9 @@ function SortDropdown({
         }`}
       >
         {activeLabel}
-        <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-3.5 w-3.5 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
       {open && (
@@ -435,9 +460,7 @@ function TabButton({
     <button
       onClick={onClick}
       className={`relative -mb-px px-1 pb-3 pt-1 text-[15px] font-semibold transition ${
-        active
-          ? "text-foreground"
-          : "text-muted-foreground hover:text-foreground"
+        active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
       }`}
     >
       {children}
@@ -536,6 +559,20 @@ function BoardsGrid({
   );
 }
 
+// Responsive column count for the masonry — 3 on mobile, 4 from `sm` up.
+// Matches the old CSS `masonry-3 sm:masonry-4` breakpoints.
+function useMasonryColumns() {
+  const [cols, setCols] = useState(3);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 640px)");
+    const update = () => setCols(mq.matches ? 4 : 3);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return cols;
+}
+
 function PinGrid({
   pins,
   selectedId,
@@ -545,37 +582,54 @@ function PinGrid({
   selectedId: string | null;
   onToggle: (id: string) => void;
 }) {
+  const cols = useMasonryColumns();
+  // Distribute round-robin across columns so recency reads left-to-right,
+  // top-to-bottom (item 0,1,2 fill the top row) — CSS `column-count` instead
+  // stacks the newest pins down the first column, hiding the sort order.
+  const columns: { pin: Pin; idx: number }[][] = Array.from({ length: cols }, () => []);
+  pins.forEach((pin, idx) => columns[idx % cols].push({ pin, idx }));
+
   return (
-    <div className="masonry-3 sm:masonry-4 lg:masonry-4">
-      {pins.map((p, i) => {
-        const grad = GRADIENTS[i % GRADIENTS.length];
-        const selected = selectedId === p.id;
-        return (
-          <article
-            key={p.id}
-            onClick={() => onToggle(p.id)}
-            className={`group relative cursor-pointer overflow-hidden rounded-2xl bg-surface shadow-sm ring-1 transition active:scale-[0.98] hover:shadow-elevate ${
-              selected ? "ring-2 ring-primary" : "ring-border/60"
-            }`}
-          >
-            {/* No forced aspect ratio — each pin renders at its own image's
-                real proportions, like native Pinterest masonry. */}
-            <div className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}>
-              {p.image_url && (
-                <img src={p.image_url} alt="" className="block w-full h-auto" loading="lazy" />
-              )}
-              {selected && (
-                <div className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-primary text-primary-foreground shadow-glow">
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                    <path fillRule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clipRule="evenodd" />
-                  </svg>
+    <div className="flex gap-4">
+      {columns.map((column, ci) => (
+        <div key={ci} className="flex flex-1 flex-col gap-4">
+          {column.map(({ pin: p, idx }) => {
+            const grad = GRADIENTS[idx % GRADIENTS.length];
+            const selected = selectedId === p.id;
+            return (
+              <article
+                key={p.id}
+                onClick={() => onToggle(p.id)}
+                className={`group relative cursor-pointer overflow-hidden rounded-2xl bg-surface shadow-sm ring-1 transition active:scale-[0.98] hover:shadow-elevate ${
+                  selected ? "ring-2 ring-primary" : "ring-border/60"
+                }`}
+              >
+                {/* No forced aspect ratio — each pin renders at its own image's
+                    real proportions, like native Pinterest masonry. */}
+                <div
+                  className={`relative w-full bg-gradient-to-br ${grad} ${p.image_url ? "" : "aspect-square"}`}
+                >
+                  {p.image_url && (
+                    <img src={p.image_url} alt="" className="block h-auto w-full" loading="lazy" />
+                  )}
+                  {selected && (
+                    <div className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-primary text-primary-foreground shadow-glow">
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                        <path
+                          fillRule="evenodd"
+                          d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    </div>
+                  )}
+                  <h3 className="sr-only">{p.title}</h3>
                 </div>
-              )}
-              <h3 className="sr-only">{p.title}</h3>
-            </div>
-          </article>
-        );
-      })}
+              </article>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }

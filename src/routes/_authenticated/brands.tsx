@@ -43,7 +43,7 @@ function BrandsPage() {
   }, [q, cat, sort]);
 
   return (
-    <AppShell title="Discover" backButton>
+    <AppShell title="Discover" backButton backTo="/dashboard">
       {/* Search + sort */}
       <div className="mt-5 flex items-center gap-2">
         <div className="flex flex-1 items-center gap-2 rounded-full bg-surface-2 px-4 py-2.5 ring-1 ring-border/60">
@@ -116,12 +116,8 @@ function BrandsPage() {
             className="group flex flex-col items-center gap-2 rounded-2xl border border-border bg-surface p-4 text-center transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevate"
           >
             <BrandLogo brand={b} size={64} />
-            <div className="mt-1 line-clamp-1 text-sm font-semibold text-foreground">
-              {b.name}
-            </div>
-            <div className="text-xs font-semibold text-primary">
-              {b.commission}% Earning
-            </div>
+            <div className="mt-1 line-clamp-1 text-sm font-semibold text-foreground">{b.name}</div>
+            <div className="text-xs font-semibold text-primary">{b.commission}% Earning</div>
           </Link>
         ))}
         {filtered.length === 0 && (

@@ -1,9 +1,8 @@
 import { createFileRoute, Link, notFound, useRouter } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
+  ChevronLeft,
   Clipboard,
-  ExternalLink,
   Info,
   Link as LinkIcon,
   Loader2,
@@ -14,7 +13,7 @@ import {
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { getBrand, brandLogoUrl } from "@/lib/brands";
+import { getBrand } from "@/lib/brands";
 import { BrandLogo } from "@/components/brand-card";
 import {
   ShareSheet,
@@ -22,6 +21,7 @@ import {
   copyToClipboard,
   type CreatedProduct,
 } from "@/components/affiliate-link-dialog";
+import { getFriendlyMessage } from "@/lib/friendly-error";
 
 export const Route = createFileRoute("/_authenticated/brands_/$brandId")({
   loader: ({ params }) => {
@@ -32,23 +32,48 @@ export const Route = createFileRoute("/_authenticated/brands_/$brandId")({
   component: BrandDetailPage,
   notFoundComponent: () => (
     <div className="mx-auto max-w-md p-6 text-center text-sm text-muted-foreground">
-      Brand not found. <Link to="/brands" className="text-primary underline">Back to brands</Link>
+      Brand not found.{" "}
+      <Link to="/brands" className="text-primary underline">
+        Back to brands
+      </Link>
     </div>
   ),
   errorComponent: ({ error }) => (
     <div className="mx-auto max-w-md p-6 text-center text-sm text-muted-foreground">
-      {error.message}
+      <h2 className="font-display text-lg font-semibold text-foreground">Something went wrong</h2>
+      <p className="mt-2">{getFriendlyMessage(error)}</p>
+      <Link to="/brands" className="mt-4 inline-block text-sm text-primary underline">
+        Back to brands
+      </Link>
     </div>
   ),
 });
 
 const CREATOR_TILES = [
-  { handle: "@influencer1", img: "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400&q=70" },
-  { handle: "@creator2", img: "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=400&q=70" },
-  { handle: "@style3", img: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=400&q=70" },
-  { handle: "@beauty4", img: "https://images.unsplash.com/photo-1522335789203-aaa8bc7c7f3f?w=400&q=70" },
-  { handle: "@glow5", img: "https://images.unsplash.com/photo-1526045478516-99145907023c?w=400&q=70" },
-  { handle: "@shop6", img: "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=400&q=70" },
+  {
+    handle: "@influencer1",
+    img: "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400&q=70",
+  },
+  {
+    handle: "@creator2",
+    img: "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=400&q=70",
+  },
+  {
+    handle: "@style3",
+    img: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=400&q=70",
+  },
+  {
+    handle: "@beauty4",
+    img: "https://images.unsplash.com/photo-1522335789203-aaa8bc7c7f3f?w=400&q=70",
+  },
+  {
+    handle: "@glow5",
+    img: "https://images.unsplash.com/photo-1526045478516-99145907023c?w=400&q=70",
+  },
+  {
+    handle: "@shop6",
+    img: "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=400&q=70",
+  },
 ];
 
 const TC_ITEMS = [
@@ -69,6 +94,8 @@ function BrandDetailPage() {
   const [expanded, setExpanded] = useState(false);
   const [createdProduct, setCreatedProduct] = useState<CreatedProduct | null>(null);
   const [pickingCollection, setPickingCollection] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const router = useRouter();
 
@@ -121,8 +148,18 @@ function BrandDetailPage() {
       toast.success("Affiliate link created");
       setCreatedProduct(inserted);
       setUrl("");
+      setUrlError(null);
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      toast.error(getFriendlyMessage(e));
+      if (
+        e.message === "Paste a product link first" ||
+        e.message === "That doesn't look like a valid URL"
+      ) {
+        setUrlError(e.message);
+        urlInputRef.current?.focus();
+      }
+    },
   });
 
   async function pasteFromClipboard() {
@@ -147,37 +184,18 @@ function BrandDetailPage() {
     setUrl("");
   }
 
-  const logo = brandLogoUrl(brand);
-
   return (
     <div className="min-h-screen bg-background pb-24">
-      {/* Header */}
-      <div className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-surface px-4 py-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (window.history.length > 1) router.history.back();
-              else router.navigate({ to: "/brands" });
-            }}
-            className="grid h-9 w-9 place-items-center rounded-full text-foreground transition hover:bg-surface-2"
-            aria-label="Back"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <h1 className="font-display text-xl font-bold text-foreground">{brand.name}</h1>
-        </div>
-        {logo && (
-          <a
-            href={`https://${brand.domain}`}
-            target="_blank"
-            rel="noreferrer"
-            className="grid h-9 w-9 place-items-center rounded-full text-foreground transition hover:bg-surface-2"
-            aria-label="Visit brand"
-          >
-            <ExternalLink className="h-5 w-5" />
-          </a>
-        )}
+      {/* Header — just the back button, brand identity lives in the card below */}
+      <div className="sticky top-0 z-20 flex items-center border-b border-border bg-surface px-4 py-4">
+        <button
+          type="button"
+          onClick={() => router.navigate({ to: "/brands" })}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground"
+          aria-label="Back"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
       </div>
 
       <div className="mx-auto max-w-md px-4 pt-5">
@@ -215,8 +233,12 @@ function BrandDetailPage() {
             >
               <div className="flex items-center gap-2 rounded-full bg-surface pl-4 pr-1.5 py-1.5">
                 <input
+                  ref={urlInputRef}
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
+                  onChange={(e) => {
+                    setUrl(e.target.value);
+                    setUrlError(null);
+                  }}
                   placeholder={`Paste any ${brand.name} product link here`}
                   className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
                 />
@@ -229,6 +251,7 @@ function BrandDetailPage() {
                   <Clipboard className="h-4 w-4" />
                 </button>
               </div>
+              {urlError && <p className="mt-1.5 px-1 text-xs text-destructive">{urlError}</p>}
               <button
                 type="submit"
                 disabled={create.isPending || !url.trim()}
@@ -248,7 +271,9 @@ function BrandDetailPage() {
 
         {/* Description */}
         <div className="mt-5">
-          <p className={`text-sm leading-relaxed text-foreground/80 ${expanded ? "" : "line-clamp-2"}`}>
+          <p
+            className={`text-sm leading-relaxed text-foreground/80 ${expanded ? "" : "line-clamp-2"}`}
+          >
             {description}
           </p>
           <button
@@ -313,12 +338,14 @@ function BrandDetailPage() {
                     className="flex items-center gap-1 text-xs font-semibold uppercase tracking-widest"
                     aria-label="Back"
                   >
-                    <ArrowLeft className="h-4 w-4" /> Back
+                    <ChevronLeft className="h-4 w-4" /> Back
                   </button>
                 ) : (
                   <>
                     <LinkIcon className="h-4 w-4" />
-                    <span className="text-xs font-semibold uppercase tracking-widest">Affiliate</span>
+                    <span className="text-xs font-semibold uppercase tracking-widest">
+                      Affiliate
+                    </span>
                   </>
                 )}
               </div>
@@ -337,7 +364,10 @@ function BrandDetailPage() {
                   product={createdProduct}
                   onDone={(collectionId) => {
                     resetLinkFlow();
-                    router.navigate({ to: "/storefront", search: { collection: collectionId } as never });
+                    router.navigate({
+                      to: "/storefront",
+                      search: { collection: collectionId } as never,
+                    });
                   }}
                 />
               ) : (

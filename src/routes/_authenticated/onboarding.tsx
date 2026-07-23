@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { getFriendlyMessage } from "@/lib/friendly-error";
 import {
   CheckCircle2,
   ArrowRight,
@@ -82,7 +83,7 @@ function OnboardingPage() {
       .update({ display_name: trimmed })
       .eq("id", userId);
     setSavingName(false);
-    if (error) return toast.error(error.message);
+    if (error) return toast.error(getFriendlyMessage(error));
     setPhase("authorize");
   }
 

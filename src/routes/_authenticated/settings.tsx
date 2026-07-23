@@ -137,8 +137,8 @@ function SettingsPage() {
   }
 
   return (
-    <AppShell title="Settings">
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6 md:px-0">
+    <AppShell title="Settings" backButton backTo="/dashboard">
+      <div className="mx-auto max-w-2xl space-y-4">
         <Section title="Account">
           <Row label={email || "Signed in"} sub="Signed in with phone OTP">
             <ShieldCheck className="h-4 w-4 text-accent" />

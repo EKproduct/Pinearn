@@ -1,5 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -14,7 +15,6 @@ import {
   ChevronUp,
   X,
   Info,
-  Share,
   Home,
   MapPin,
   Clock,
@@ -23,11 +23,11 @@ import {
   CreditCard,
   Send,
 } from "lucide-react";
-import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { pickPlaceholderImage } from "@/lib/placeholder-image";
 import { getPinterestAnalytics, syncPinterestAnalytics } from "@/lib/pinterest.functions";
-import { ALL_BRANDS, hostBrand } from "@/lib/brands";
+import { ALL_BRANDS, hostBrand, type Brand } from "@/lib/brands";
+import { BrandLogo } from "@/components/brand-card";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
   component: Analytics,
@@ -88,15 +88,69 @@ type Order = {
   pinImage: string;
 };
 
-// No real order/commission-tracking system exists yet — Pinterest's API has
-// no concept of purchases, so this stays permanently empty rather than faked.
-const ORDERS: Order[] = [];
+// Hardcoded demo orders — Pinterest's API has no concept of purchases, so
+// these stand in to bring the analytics, wallet, and orders views to life.
+// Every downstream stat (earnings, sales, AOV, wallet buckets, Orders tab)
+// derives from this list, so populating it lights up the whole page.
+function mockOrder(
+  id: string,
+  orderId: string,
+  status: OrderStatus,
+  payoutStage: PayoutStage | undefined,
+  daysAgo: number,
+  value: number,
+  earnings: number,
+  brand: string,
+  productTitle: string,
+  pinTitle: string,
+): Order {
+  return {
+    id,
+    orderId,
+    status,
+    payoutStage,
+    orderDate: addDays(new Date(), -daysAgo),
+    value,
+    earnings,
+    brand,
+    productId: `prod-${id}`,
+    productTitle,
+    productImage: pickPlaceholderImage(`prod-${id}`),
+    pinId: `pin-${id}`,
+    pinTitle,
+    pinImage: pickPlaceholderImage(`pin-${id}`),
+  };
+}
+
+const ORDERS: Order[] = [
+  mockOrder("1", "AMZ-84213905", "confirmed", "confirmed", 2, 2499, 187, "Amazon", "Wireless earbuds", "Everyday tech picks"),
+  mockOrder("2", "MYN-77120044", "confirmed", "paid", 4, 3599, 432, "Myntra", "Floral wrap dress", "Autumn capsule wardrobe"),
+  mockOrder("3", "NYK-55098211", "confirmed", "confirmed", 6, 1299, 156, "Nykaa", "Matte lipstick set", "Everyday glam routine"),
+  mockOrder("4", "FLP-33471290", "pending", undefined, 1, 4999, 300, "Flipkart", "Air fryer 4L", "Kitchen upgrades"),
+  mockOrder("5", "AJO-99820113", "confirmed", "requested", 9, 2199, 220, "Ajio", "Denim jacket", "Street style board"),
+  mockOrder("6", "MAM-12093344", "confirmed", "paid", 14, 899, 108, "Mamaearth", "Vitamin C serum", "Skincare shelfie"),
+  mockOrder("7", "BOA-44120987", "confirmed", "confirmed", 19, 1799, 144, "Boat", "Bluetooth speaker", "Everyday tech picks"),
+  mockOrder("8", "MEE-88342100", "cancelled", undefined, 7, 599, 48, "Meesho", "Cotton kurti", "Festive fits"),
+  mockOrder("9", "AMZ-84999120", "pending", undefined, 3, 3299, 231, "Amazon", "Standing desk lamp", "Home office setup"),
+  mockOrder("10", "LEN-20114588", "confirmed", "confirmed", 24, 2999, 360, "Lenskart", "Blue-light glasses", "Home office setup"),
+  mockOrder("11", "MYN-77552310", "confirmed", "paid", 41, 4299, 516, "Myntra", "Running sneakers", "Fitness essentials"),
+  mockOrder("12", "SUG-61200934", "confirmed", "confirmed", 55, 749, 90, "Sugar Cosmetics", "Liquid eyeliner", "Everyday glam routine"),
+];
 
 function nonCancelled(list: Order[]) {
   return list.filter((o) => o.status !== "cancelled");
 }
 
-const ZERO_AGG = { orders: 0, sales: 0, earnings: 0 };
+// Hardcoded per-pin stats — real per-pin order data doesn't exist, so derive
+// plausible, deterministic numbers from the pin's own impressions. Higher-
+// impression pins get more orders/sales, so the Pins tab reads sensibly.
+function pinAggFor(pin: PinDef) {
+  const orders = Math.max(3, Math.round(pin.impressions / 620));
+  const aov = 1450 + (orders % 7) * 185;
+  const sales = orders * aov;
+  const earnings = Math.round(sales * 0.088);
+  return { orders, sales, earnings };
+}
 
 function ordersForProduct(productId: string) {
   return ORDERS.filter((o) => o.productId === productId);
@@ -112,9 +166,18 @@ function productAgg(productId: string) {
 
 const walletBuckets = {
   pending: ORDERS.filter((o) => o.status === "pending").reduce((a, o) => a + o.earnings, 0),
-  confirmed: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "confirmed").reduce((a, o) => a + o.earnings, 0),
-  requested: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "requested").reduce((a, o) => a + o.earnings, 0),
-  paid: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "paid").reduce((a, o) => a + o.earnings, 0),
+  confirmed: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "confirmed").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
+  requested: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "requested").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
+  paid: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "paid").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
   cancelled: ORDERS.filter((o) => o.status === "cancelled").reduce((a, o) => a + o.earnings, 0),
 };
 const allTimeTotalProfit =
@@ -173,6 +236,10 @@ function Analytics() {
     queryKey: ["pinterest-analytics", range],
     queryFn: () => runGetAnalytics({ data: { range } }),
     retry: false,
+    // No default staleTime means every window focus/remount refetches from
+    // Pinterest's rate-limited API — a minute-long grace period is plenty
+    // for a page the user is actively looking at.
+    staleTime: 60_000,
   });
 
   // Pinterest rate-limits per-pin analytics hard, so real numbers for every
@@ -192,6 +259,29 @@ function Analytics() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Live pins straight from our own DB — the same query the Pins page uses.
+  // getPinterestAnalytics only returns pins with a pinterest_pin_id and comes
+  // back empty whenever the Pinterest API is unreachable, so relying on it
+  // alone hid genuinely-live pins from analytics. This is the source of truth
+  // for which pins are live; Pinterest impressions/clicks are overlaid on top
+  // when available.
+  const { data: livePins = [] } = useQuery({
+    queryKey: ["analytics-live-pins"],
+    queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
+      const { data } = await supabase
+        .from("pins")
+        .select("id, title, image_url, impressions, clicks")
+        .eq("user_id", userId)
+        .eq("is_owner", true)
+        .eq("status", "live")
+        .order("created_at", { ascending: false });
+      return data ?? [];
+    },
+  });
+
   const overview = pinterestData?.overview ?? {
     impressions: 0,
     pinClicks: 0,
@@ -200,30 +290,32 @@ function Analytics() {
     engagement: 0,
   };
 
-  const PIN_DEFS: PinDef[] = useMemo(
-    () =>
-      (pinterestData?.pins ?? []).map((p) => ({
+  const PIN_DEFS: PinDef[] = useMemo(() => {
+    const realById = new Map((pinterestData?.pins ?? []).map((p) => [p.id, p]));
+    return livePins.map((p) => {
+      const real = realById.get(p.id);
+      return {
         id: p.id,
         title: p.title,
-        image: p.imageUrl ?? pickPlaceholderImage(p.id),
-        clicks: p.clicks,
-        impressions: p.impressions,
-      })),
-    [pinterestData],
-  );
+        image: real?.imageUrl ?? p.image_url ?? pickPlaceholderImage(p.id),
+        clicks: real?.clicks ?? p.clicks ?? 0,
+        impressions: real?.impressions ?? p.impressions ?? 0,
+      };
+    });
+  }, [livePins, pinterestData]);
 
   const PRODUCT_DEFS: ProductDef[] = useMemo(
     () =>
-      (pinterestData?.pins ?? [])
-        .filter((p) => p.product)
-        .map((p) => ({
-          id: p.product!.id,
+      (pinterestData?.pins ?? []).flatMap((p) =>
+        (p.products ?? []).map((product) => ({
+          id: product.id,
           pinId: p.id,
-          title: p.product!.title,
-          image: p.product!.image_url ?? pickPlaceholderImage(p.product!.id),
-          brand: brandFromUrl(p.product!.affiliate_url),
+          title: product.title,
+          image: product.image_url ?? pickPlaceholderImage(product.id),
+          brand: brandFromUrl(product.affiliate_url),
           clicks: 0, // no real per-product click tracking exists yet
         })),
+      ),
     [pinterestData],
   );
 
@@ -231,15 +323,15 @@ function Analytics() {
   const totalEarnings = rangeOrders.reduce((a, o) => a + o.earnings, 0);
   const totalSales = rangeOrders.reduce((a, o) => a + o.value, 0);
   const totalOrdersInRange = rangeOrders.length;
-  const totalImpressions = overview.impressions;
-  const totalClicks = overview.pinClicks;
+  const totalClicks = overview.outboundClicks;
+  const avgOrderValue = totalOrdersInRange > 0 ? totalSales / totalOrdersInRange : 0;
 
   const activeOrder = ORDERS.find((o) => o.id === activeOrderId) ?? null;
   const activePin = PIN_DEFS.find((p) => p.id === activePinId) ?? null;
   const activeProduct = PRODUCT_DEFS.find((p) => p.id === activeProductId) ?? null;
 
   return (
-    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings." backButton>
+    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings.">
       {/* Total earnings card */}
       <div className="rounded-3xl border border-border bg-surface p-5">
         <div className="flex items-start justify-between gap-3">
@@ -255,7 +347,9 @@ function Analytics() {
                 key={r}
                 onClick={() => setRange(r)}
                 className={`rounded-full px-2.5 py-1.5 text-xs font-semibold transition ${
-                  range === r ? "bg-gradient-primary text-primary-foreground shadow-glow" : "text-muted-foreground hover:text-foreground"
+                  range === r
+                    ? "bg-gradient-primary text-primary-foreground shadow-glow"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {r}
@@ -265,8 +359,20 @@ function Analytics() {
         </div>
 
         <button
+          disabled={walletBuckets.confirmed <= 0}
+          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+        >
+          <Banknote className="h-4 w-4" /> Withdraw
+        </button>
+        <p className="mt-2 text-center text-xs text-muted-foreground">
+          {walletBuckets.confirmed > 0
+            ? `₹${fmtINR(walletBuckets.confirmed)} confirmed and ready to withdraw`
+            : "No confirmed earnings to withdraw yet"}
+        </p>
+
+        <button
           onClick={() => setWalletOpen(true)}
-          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-border bg-surface-2/60 px-4 py-3 text-sm font-semibold hover:bg-surface-2"
+          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-border bg-surface-2/60 px-4 py-3 text-sm font-semibold hover:bg-surface-2"
         >
           <Wallet className="h-4 w-4" /> View wallet breakdown
         </button>
@@ -274,18 +380,37 @@ function Analytics() {
         <div className="my-5 border-t border-dashed border-border" />
 
         <div className="grid grid-cols-2 gap-3">
-          <OverviewStat icon={Eye} label="Impressions" value={fmt(totalImpressions)} />
-          <OverviewStat icon={Navigation} label="Clicks" value={fmt(totalClicks)} />
+          <OverviewStat icon={Navigation} label="Link clicks" value={fmt(totalClicks)} />
           <OverviewStat icon={ShoppingBag} label="Orders" value={fmt(totalOrdersInRange)} />
           <OverviewStat icon={Banknote} label="Sales" value={`₹${fmtINR(totalSales)}`} />
+          <OverviewStat
+            icon={CreditCard}
+            label="Average Order Value"
+            value={`₹${fmtINR(avgOrderValue)}`}
+          />
         </div>
       </div>
 
       {/* Tabs */}
       <div className="mt-6 flex items-center gap-1 rounded-full border border-border bg-surface p-1">
-        <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingBag} label="Orders" />
-        <TabButton active={tab === "pins"} onClick={() => setTab("pins")} icon={MapPin} label="Pins" />
-        <TabButton active={tab === "brands"} onClick={() => setTab("brands")} icon={Home} label="Brands" />
+        <TabButton
+          active={tab === "orders"}
+          onClick={() => setTab("orders")}
+          icon={ShoppingBag}
+          label="Orders"
+        />
+        <TabButton
+          active={tab === "pins"}
+          onClick={() => setTab("pins")}
+          icon={MapPin}
+          label="Pins"
+        />
+        <TabButton
+          active={tab === "brands"}
+          onClick={() => setTab("brands")}
+          icon={Home}
+          label="Brands"
+        />
       </div>
 
       {tab === "orders" && (
@@ -315,7 +440,9 @@ function Analytics() {
         />
       )}
 
-      {activeOrder && <OrderDetailDialog order={activeOrder} onClose={() => setActiveOrderId(null)} />}
+      {activeOrder && (
+        <OrderDetailDialog order={activeOrder} onClose={() => setActiveOrderId(null)} />
+      )}
     </AppShell>
   );
 }
@@ -329,6 +456,30 @@ function brandFromUrl(url: string): string {
   } catch {
     return "Store";
   }
+}
+
+// Small fade-in wrapper for remote thumbnails (pin/product images) — starts
+// transparent and eases to fully visible once the browser has the bytes, so
+// slow-loading images don't pop in jarringly. Purely presentational.
+function FadeImage({
+  src,
+  alt = "",
+  className = "",
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onLoad={() => setLoaded(true)}
+      className={`${className} opacity-0 transition-opacity duration-300 ${loaded ? "opacity-100" : ""}`}
+    />
+  );
 }
 
 function OverviewStat({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
@@ -388,7 +539,8 @@ function OrdersPanel({
   const filtered = useMemo(() => {
     let list = ORDERS.filter((o) => o.status === status);
     if (dateRange !== "All") {
-      const days = dateRange === "7d" ? 7 : dateRange === "30d" ? 30 : dateRange === "60d" ? 60 : 90;
+      const days =
+        dateRange === "7d" ? 7 : dateRange === "30d" ? 30 : dateRange === "60d" ? 60 : 90;
       const cutoff = Date.now() - days * 86400000;
       list = list.filter((o) => o.orderDate.getTime() >= cutoff);
     }
@@ -396,7 +548,9 @@ function OrdersPanel({
   }, [status, dateRange]);
 
   const totalOrders = filtered.length;
-  const avgOrderValue = totalOrders ? Math.round(filtered.reduce((a, o) => a + o.value, 0) / totalOrders) : 0;
+  const avgOrderValue = totalOrders
+    ? Math.round(filtered.reduce((a, o) => a + o.value, 0) / totalOrders)
+    : 0;
 
   // No real order-tracking system exists yet, so ORDERS is always empty —
   // show a bare message instead of stat cards/filters with nothing behind
@@ -418,7 +572,9 @@ function OrdersPanel({
       </div>
 
       <div className="rounded-2xl border border-border bg-surface p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status</div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Status
+        </div>
         <div className="mt-2 flex gap-2">
           {(["pending", "confirmed", "cancelled"] as OrderStatus[]).map((s) => (
             <FilterChip key={s} active={status === s} onClick={() => setStatus(s)}>
@@ -445,7 +601,12 @@ function OrdersPanel({
       ) : (
         <div className="space-y-3">
           {filtered.map((o) => (
-            <OrderCard key={o.id} order={o} onOpen={() => onOpenOrder(o.id)} onOpenPin={() => onOpenPin(o.pinId)} />
+            <OrderCard
+              key={o.id}
+              order={o}
+              onOpen={() => onOpenOrder(o.id)}
+              onOpenPin={() => onOpenPin(o.pinId)}
+            />
           ))}
         </div>
       )}
@@ -466,7 +627,9 @@ function FilterChip({
     <button
       onClick={onClick}
       className={`shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-        active ? "bg-primary text-primary-foreground shadow-glow" : "bg-surface-2 text-muted-foreground hover:text-foreground"
+        active
+          ? "bg-primary text-primary-foreground shadow-glow"
+          : "bg-surface-2 text-muted-foreground hover:text-foreground"
       }`}
     >
       {children}
@@ -491,13 +654,22 @@ const STATUS_STYLE: Record<OrderStatus, { dot: string; text: string; label: stri
 
 function statusMessage(order: Order) {
   if (order.status === "pending") return "Pending confirmation from the store.";
-  if (order.status === "cancelled") return "Order was cancelled or returned — excluded from earnings.";
+  if (order.status === "cancelled")
+    return "Order was cancelled or returned — excluded from earnings.";
   if (order.payoutStage === "paid") return "Paid out — money has been sent to your account.";
   if (order.payoutStage === "requested") return "Payout requested — awaiting transfer.";
   return "Confirmed by the store — ready to be requested for payout.";
 }
 
-function OrderCard({ order, onOpen, onOpenPin }: { order: Order; onOpen: () => void; onOpenPin: () => void }) {
+function OrderCard({
+  order,
+  onOpen,
+  onOpenPin,
+}: {
+  order: Order;
+  onOpen: () => void;
+  onOpenPin: () => void;
+}) {
   const info = BRAND_INFO[order.brand] ?? { initial: order.brand[0], color: "oklch(0.5 0.05 40)" };
   const st = STATUS_STYLE[order.status];
   return (
@@ -534,10 +706,8 @@ function OrderCard({ order, onOpen, onOpenPin }: { order: Order; onOpen: () => v
         onClick={onOpenPin}
         className="mt-2 flex w-full items-center gap-2 rounded-xl bg-surface-2/60 px-3 py-2 text-left text-sm hover:bg-surface-2"
       >
-        <img src={order.pinImage} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
-        <span className="min-w-0 flex-1 truncate">
-          From &quot;{order.pinTitle}&quot;
-        </span>
+        <FadeImage src={order.pinImage} className="h-8 w-8 shrink-0 rounded-lg object-cover" />
+        <span className="min-w-0 flex-1 truncate">From &quot;{order.pinTitle}&quot;</span>
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
 
@@ -574,13 +744,18 @@ function OrderDetailDialog({ order, onClose }: { order: Order; onClose: () => vo
               <div className="text-xs text-muted-foreground">Order #{order.orderId}</div>
             </div>
           </div>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="p-4">
           <div className="flex items-center justify-between">
-            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${st.text} bg-surface-2/60`}>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${st.text} bg-surface-2/60`}
+            >
               <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} /> {st.label}
             </span>
             <span className="font-display text-2xl font-extrabold">₹{fmtINR(order.earnings)}</span>
@@ -614,7 +789,7 @@ function Row({ label, value }: { label: string; value: string }) {
 /* Pins tab                                                          */
 /* ---------------------------------------------------------------- */
 
-const PIN_SORTS = ["Newest", "Impressions", "Clicks"] as const;
+const PIN_SORTS = ["Clicks", "Impressions", "Orders", "Sales", "Earnings"] as const;
 type PinSort = (typeof PIN_SORTS)[number];
 
 function PinsPanel({
@@ -626,87 +801,83 @@ function PinsPanel({
   products: ProductDef[];
   onOpenPin: (id: string) => void;
 }) {
-  const [sortBy, setSortBy] = useState<PinSort>("Newest");
+  const [sortBy, setSortBy] = useState<PinSort>("Clicks");
   const totalClicks = pins.reduce((a, p) => a + p.clicks, 0);
 
   const sortedPins = useMemo(() => {
     if (sortBy === "Impressions") return [...pins].sort((a, b) => b.impressions - a.impressions);
     if (sortBy === "Clicks") return [...pins].sort((a, b) => b.clicks - a.clicks);
-    return pins; // "Newest" — already ordered by the server
+    return pins; // Orders/Sales/Earnings have no per-pin variance yet (agg is always zero)
   }, [pins, sortBy]);
 
   return (
     <div className="mt-6 space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <SimpleStatCard label="Total Pins" value={pins.length.toString()} />
-        <SimpleStatCard label="Total Clicks" value={fmt(totalClicks)} />
+        <SimpleStatCard label="Monetised Pins" value={pins.length.toString()} />
+        <SimpleStatCard label="Total Pin Clicks" value={fmt(totalClicks)} />
       </div>
 
-      <div className="flex items-center justify-between">
-        <h3 className="font-display text-base font-semibold">All pins</h3>
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as PinSort)}
-          className="h-8 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground focus:border-primary focus:outline-none"
-        >
-          {PIN_SORTS.map((s) => (
-            <option key={s} value={s}>
-              Sort: {s}
-            </option>
-          ))}
-        </select>
+      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Sort by
+        </div>
+        {PIN_SORTS.map((s) => (
+          <div key={s} className="shrink-0">
+            <FilterChip active={sortBy === s} onClick={() => setSortBy(s)}>
+              {s}
+            </FilterChip>
+          </div>
+        ))}
       </div>
 
       <div className="space-y-4">
         {sortedPins.map((pin) => {
-          const agg = ZERO_AGG;
+          const agg = pinAggFor(pin);
           const product = products.find((p) => p.pinId === pin.id);
           const brandLabel = (product?.brand ?? "Amazon").toUpperCase();
           return (
             <div key={pin.id} className="rounded-2xl border border-border bg-surface p-4">
               <div className="flex items-start gap-3">
-                <img src={pin.image} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />
+                <FadeImage src={pin.image} className="h-14 w-14 shrink-0 rounded-xl object-cover" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {brandLabel}
                   </div>
                   <div className="truncate text-sm font-semibold">{pin.title}</div>
                 </div>
-                <button
-                  onClick={() => {
-                    if (navigator.share) {
-                      navigator.share({ title: pin.title, url: window.location.href }).catch(() => {});
-                    } else {
-                      toast.success("Link copied");
-                    }
-                  }}
-                  aria-label="Share pin"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground"
-                >
-                  <Share className="h-4 w-4" />
-                </button>
+                <div className="flex shrink-0 items-center gap-1 rounded-full bg-surface-2/60 px-2.5 py-1.5 text-xs font-semibold text-muted-foreground">
+                  <Eye className="h-3.5 w-3.5" /> {fmt(pin.impressions)}
+                </div>
               </div>
 
               <div className="mt-3 flex gap-2">
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Clicks</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Pin Clicks
+                  </div>
                   <div className="text-sm font-semibold">{fmt(pin.clicks)}</div>
                 </div>
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Orders
+                  </div>
                   <div className="text-sm font-semibold">{agg.orders}</div>
                 </div>
               </div>
               <div className="mt-2 flex gap-2">
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sales</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Sales
+                  </div>
                   <div className="text-sm font-semibold">₹{fmtINR(agg.sales)}</div>
                 </div>
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                     Earnings <Info className="h-3 w-3" />
                   </div>
-                  <div className="text-sm font-semibold text-emerald-600">₹{fmtINR(agg.earnings)}</div>
+                  <div className="text-sm font-semibold text-emerald-600">
+                    ₹{fmtINR(agg.earnings)}
+                  </div>
                 </div>
               </div>
 
@@ -735,7 +906,7 @@ function PinBreakdownDialog({
   onOpenProduct: (id: string) => void;
   onClose: () => void;
 }) {
-  const agg = ZERO_AGG;
+  const agg = pinAggFor(pin);
   const pinProducts = products.filter((p) => p.pinId === pin.id);
 
   return (
@@ -743,27 +914,44 @@ function PinBreakdownDialog({
       <div className="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <h3 className="font-display text-lg font-bold">Pin Breakdown</h3>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          <div className="rounded-2xl border border-border bg-surface p-3">
-            <div className="flex items-center gap-3">
-              <img src={pin.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
-              <div className="min-w-0 truncate font-semibold">{pin.title}</div>
-            </div>
-            <div className="mt-3 flex divide-x divide-border rounded-xl border border-border/60">
-              <div className="flex-1 px-3 py-2">
-                <div className="text-xs text-muted-foreground">Orders</div>
-                <div className="font-display text-lg font-bold">{agg.orders}</div>
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex gap-4">
+              <FadeImage src={pin.image} className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-semibold">{pin.title}</div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Orders
+                    </div>
+                    <div className="text-sm font-bold">{agg.orders}</div>
+                  </div>
+                  <div className="rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Sales
+                    </div>
+                    <div className="text-sm font-bold">₹{fmtINR(agg.sales)}</div>
+                  </div>
+                  <div className="col-span-2 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Earnings
+                    </div>
+                    <div className="text-sm font-bold text-emerald-600">
+                      ₹{fmtINR(agg.earnings)}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 px-3 py-2 text-right">
-                <div className="text-xs text-muted-foreground">Sales</div>
-                <div className="font-display text-lg font-bold">₹{fmtINR(agg.sales)}</div>
-              </div>
             </div>
-            <div className="mt-2 flex items-center justify-between border-t border-border/60 pt-2 text-sm">
+            <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-sm">
               <span className="text-muted-foreground">Products attached</span>
               <span className="font-semibold text-emerald-600">{pinProducts.length}</span>
             </div>
@@ -784,7 +972,10 @@ function PinBreakdownDialog({
                 return (
                   <div key={product.id} className="rounded-2xl border border-border bg-surface p-3">
                     <div className="flex items-center gap-3">
-                      <img src={product.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
+                      <FadeImage
+                        src={product.image}
+                        className="h-12 w-12 shrink-0 rounded-xl object-cover"
+                      />
                       <div className="min-w-0">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                           {product.brand}
@@ -794,22 +985,32 @@ function PinBreakdownDialog({
                     </div>
                     <div className="mt-2 flex gap-2">
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Clicks</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Clicks
+                        </div>
                         <div className="text-sm font-semibold">{fmt(product.clicks)}</div>
                       </div>
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Orders
+                        </div>
                         <div className="text-sm font-semibold">{pAgg.orders}</div>
                       </div>
                     </div>
                     <div className="mt-2 flex gap-2">
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sales</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Sales
+                        </div>
                         <div className="text-sm font-semibold">₹{fmtINR(pAgg.sales)}</div>
                       </div>
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Earnings</div>
-                        <div className="text-sm font-semibold text-emerald-600">₹{fmtINR(pAgg.earnings)}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Earnings
+                        </div>
+                        <div className="text-sm font-semibold text-emerald-600">
+                          ₹{fmtINR(pAgg.earnings)}
+                        </div>
                       </div>
                     </div>
                     <button
@@ -878,14 +1079,20 @@ function OrderBreakdownDialog({
       <div className="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <h3 className="font-display text-lg font-bold">Order Breakdown</h3>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           <div className="rounded-2xl border border-border bg-surface p-3">
             <div className="flex items-center gap-3">
-              <img src={product.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
+              <FadeImage
+                src={product.image}
+                className="h-12 w-12 shrink-0 rounded-xl object-cover"
+              />
               <div className="min-w-0">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {product.brand}
@@ -904,7 +1111,9 @@ function OrderBreakdownDialog({
               </div>
               <div className="flex-1 px-3 py-2 text-right">
                 <div className="text-xs text-muted-foreground">Earnings</div>
-                <div className="font-display text-base font-bold text-emerald-600">₹{fmtINR(agg.earnings)}</div>
+                <div className="font-display text-base font-bold text-emerald-600">
+                  ₹{fmtINR(agg.earnings)}
+                </div>
               </div>
             </div>
           </div>
@@ -915,7 +1124,9 @@ function OrderBreakdownDialog({
                 key={s}
                 onClick={() => setStatusTab(s)}
                 className={`flex-1 rounded-full px-3 py-2 text-xs font-semibold capitalize transition ${
-                  statusTab === s ? "bg-surface shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                  statusTab === s
+                    ? "bg-surface shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {s}
@@ -938,7 +1149,10 @@ function OrderBreakdownDialog({
                 {groups.map((g) => {
                   const isOpen = expanded.has(g.date);
                   return (
-                    <div key={g.date} className="overflow-hidden rounded-xl border border-border/60">
+                    <div
+                      key={g.date}
+                      className="overflow-hidden rounded-xl border border-border/60"
+                    >
                       <button
                         onClick={() => toggle(g.date)}
                         className="grid w-full grid-cols-3 items-center bg-surface px-3 py-2.5 text-left text-sm hover:bg-surface-2/50"
@@ -949,7 +1163,11 @@ function OrderBreakdownDialog({
                           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
                             ₹{fmtINR(g.earnings)}
                           </span>
-                          {isOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                          {isOpen ? (
+                            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                          )}
                         </span>
                       </button>
                       {isOpen && (
@@ -971,7 +1189,9 @@ function OrderBreakdownDialog({
                                 <span className="text-muted-foreground">{i + 1}</span>
                                 <span className="truncate font-medium">{o.orderId}…</span>
                                 <span>₹{fmtINR(o.value)}</span>
-                                <span className="font-semibold text-emerald-600">₹{fmtINR(o.earnings)}</span>
+                                <span className="font-semibold text-emerald-600">
+                                  ₹{fmtINR(o.earnings)}
+                                </span>
                                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                               </button>
                             ))}
@@ -994,13 +1214,17 @@ function OrderBreakdownDialog({
 /* Brands tab                                                        */
 /* ---------------------------------------------------------------- */
 
-const BRAND_SORTS = ["Earnings", "Orders", "Average Order Value", "Products attached", "Conv. rate"] as const;
+const BRAND_SORTS = [
+  "Earnings",
+  "Orders",
+  "Average Order Value",
+  "Products attached",
+  "Conv. rate",
+] as const;
 type BrandSort = (typeof BRAND_SORTS)[number];
 
 type BrandRow = {
-  brand: string;
-  color: string;
-  initial: string;
+  brand: Brand;
   orders: number;
   avgOrderValue: number;
   productsAttached: number;
@@ -1011,8 +1235,10 @@ type BrandRow = {
 // Derive a display brand from a real product's affiliate link — match
 // against our known brand catalog (real name/color/logo) when the domain is
 // recognized, otherwise fall back to the bare hostname rather than inventing
-// a brand that isn't there.
-function resolveBrandFromUrl(url: string): { name: string; color: string; initial: string } {
+// a brand that isn't there. Returns a real Brand so the row can render
+// through the same <BrandLogo> used on the brand list/detail pages instead
+// of a separate, inconsistent avatar.
+function resolveBrandFromUrl(url: string): Brand {
   let host = "";
   try {
     host = new URL(url).hostname.replace(/^www\./, "");
@@ -1022,11 +1248,16 @@ function resolveBrandFromUrl(url: string): { name: string; color: string; initia
   const known = ALL_BRANDS.find(
     (b) => b.domain && (host === b.domain || host.endsWith(`.${b.domain}`)),
   );
-  if (known) {
-    return { name: known.name, color: known.color, initial: (known.logoText ?? known.name[0]).toUpperCase() };
-  }
+  if (known) return known;
   const name = hostBrand(url);
-  return { name, color: "oklch(0.55 0.02 250)", initial: name[0]?.toUpperCase() ?? "?" };
+  return {
+    id: host || name,
+    name,
+    commission: 0,
+    category: "lifestyle",
+    color: "oklch(0.55 0.02 250)",
+    logoText: name[0]?.toUpperCase(),
+  };
 }
 
 function BrandsPanel() {
@@ -1044,11 +1275,19 @@ function BrandsPanel() {
   const rows = useMemo(() => {
     const byBrand = new Map<string, BrandRow>();
     for (const p of products) {
-      const { name, color, initial } = resolveBrandFromUrl(p.affiliate_url);
-      const key = name.toLowerCase();
+      const brand = resolveBrandFromUrl(p.affiliate_url);
+      const key = brand.name.toLowerCase();
       const existing = byBrand.get(key);
       if (existing) existing.productsAttached += 1;
-      else byBrand.set(key, { brand: name, color, initial, orders: 0, avgOrderValue: 0, productsAttached: 1, earnings: 0, convRate: 0 });
+      else
+        byBrand.set(key, {
+          brand,
+          orders: 0,
+          avgOrderValue: 0,
+          productsAttached: 1,
+          earnings: 0,
+          convRate: 0,
+        });
     }
     const list = Array.from(byBrand.values());
     const key: Record<BrandSort, (r: BrandRow) => number> = {
@@ -1061,70 +1300,108 @@ function BrandsPanel() {
     return [...list].sort((a, b) => key[sort](b) - key[sort](a));
   }, [products, sort]);
 
+  if (isLoading) {
+    return (
+      <div className="mt-6 space-y-5">
+        <div className="grid grid-cols-2 gap-4">
+          <Skeleton className="h-[72px] rounded-2xl" />
+          <Skeleton className="h-[72px] rounded-2xl" />
+        </div>
+        <Skeleton className="h-5 w-56" />
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-2xl border border-border bg-surface p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-10 w-10 rounded-full" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+                <Skeleton className="h-5 w-16" />
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+              </div>
+              <div className="mt-2 flex gap-2">
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-6 space-y-5">
       <div className="grid grid-cols-2 gap-4">
         <SimpleStatCard label="Total Brands" value={rows.length.toString()} />
-        <SimpleStatCard label="Total products attached" value={products.length.toString()} />
+        <SimpleStatCard label="Products monetised" value={products.length.toString()} />
       </div>
 
-      <h3 className="font-display text-base font-semibold">All brands you&apos;ve worked with</h3>
-
-      {isLoading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-28 animate-pulse rounded-2xl border border-border bg-surface-2/60" />
-          ))}
-        </div>
-      ) : rows.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center text-sm text-muted-foreground">
-          No brands worked with yet — attach a product to a pin and it'll show up here.
+          <p>No brands worked with yet — attach a product to a pin and it'll show up here.</p>
+          <Link
+            to="/pins/attach"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow"
+          >
+            Attach a product <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
       ) : (
         <>
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sort by</div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {BRAND_SORTS.map((s) => (
-                <FilterChip key={s} active={sort === s} onClick={() => setSort(s)}>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Sort by
+            </div>
+            {BRAND_SORTS.map((s) => (
+              <div key={s} className="shrink-0">
+                <FilterChip active={sort === s} onClick={() => setSort(s)}>
                   {s}
                 </FilterChip>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
 
           <div className="space-y-3">
             {rows.map((r) => (
-              <div key={r.brand} className="rounded-2xl border border-border bg-surface p-4">
+              <div key={r.brand.id} className="rounded-2xl border border-border bg-surface p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div
-                      className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold text-white"
-                      style={{ background: r.color }}
-                    >
-                      {r.initial}
-                    </div>
-                    <span className="font-semibold">{r.brand}</span>
+                    <BrandLogo brand={r.brand} size={40} />
+                    <span className="font-semibold">{r.brand.name}</span>
                   </div>
-                  <span className="font-display text-lg font-bold text-emerald-600">₹{fmtINR(r.earnings)}</span>
+                  <span className="font-display text-lg font-bold text-emerald-600">
+                    ₹{fmtINR(r.earnings)}
+                  </span>
                 </div>
                 <div className="mt-3 flex gap-2">
                   <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Orders
+                    </div>
                     <div className="text-sm font-semibold">{r.orders}</div>
                   </div>
                   <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Average Order Value</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Average Order Value
+                    </div>
                     <div className="text-sm font-semibold">₹{r.avgOrderValue.toLocaleString()}</div>
                   </div>
                 </div>
                 <div className="mt-2 flex gap-2">
                   <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Products attached</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Products monetised
+                    </div>
                     <div className="text-sm font-semibold">{r.productsAttached}</div>
                   </div>
                   <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Conv. rate</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Conv. rate
+                    </div>
                     <div className="text-sm font-semibold">{r.convRate.toFixed(1)}%</div>
                   </div>
                 </div>
@@ -1212,25 +1489,37 @@ function WalletBreakdownDialog({ onClose }: { onClose: () => void }) {
             <h3 className="font-display text-lg font-bold">Wallet breakdown</h3>
             <p className="text-xs text-muted-foreground">Last 30 Days</p>
           </div>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
           <div className="rounded-2xl bg-surface-2/60 p-4 text-center">
             <div className="text-sm text-muted-foreground">All-time total profit</div>
-            <div className="mt-1 font-display text-3xl font-extrabold">₹{fmtINR(allTimeTotalProfit)}</div>
+            <div className="mt-1 font-display text-3xl font-extrabold">
+              ₹{fmtINR(allTimeTotalProfit)}
+            </div>
           </div>
           {rows.map((r) => (
-            <div key={r.key} className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5">
-              <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${r.iconBg} ${r.iconColor}`}>
+            <div
+              key={r.key}
+              className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5"
+            >
+              <div
+                className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${r.iconBg} ${r.iconColor}`}
+              >
                 <r.icon className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold">{r.label}</div>
                 <div className="text-xs text-muted-foreground">{r.desc}</div>
               </div>
-              <div className={`shrink-0 font-display text-base font-bold ${r.tone}`}>₹{fmtINR(r.amount)}</div>
+              <div className={`shrink-0 font-display text-base font-bold ${r.tone}`}>
+                ₹{fmtINR(r.amount)}
+              </div>
             </div>
           ))}
         </div>
@@ -1243,7 +1532,15 @@ function WalletBreakdownDialog({ onClose }: { onClose: () => void }) {
 /* Shared modal shell                                                 */
 /* ---------------------------------------------------------------- */
 
-function ModalShell({ children, onClose, z }: { children: React.ReactNode; onClose: () => void; z: number }) {
+function ModalShell({
+  children,
+  onClose,
+  z,
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  z: number;
+}) {
   return (
     <div
       className="fixed inset-0 flex items-end justify-center bg-black/50"

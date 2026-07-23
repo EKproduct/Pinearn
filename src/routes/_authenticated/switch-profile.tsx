@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Check, Plus, Users, Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Check, Plus, Users } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/switch-profile")({
   component: SwitchProfilePage,
@@ -18,7 +19,9 @@ function readStore(primaryHandle?: string | null): {
   try {
     const raw = localStorage.getItem("pinearn.pinAccounts");
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch {
+    /* corrupt/missing localStorage value — fall back to defaults */
+  }
   return { accounts: [], activeId: "primary" };
 }
 
@@ -65,8 +68,7 @@ function SwitchProfilePage() {
     e.preventDefault();
     const h = newHandle.replace(/^@/, "").trim();
     if (h.length < 2) return toast.error("Enter a handle");
-    if (accounts.some((a) => a.handle === h))
-      return toast.error("Already added");
+    if (accounts.some((a) => a.handle === h)) return toast.error("Already added");
     const id = crypto.randomUUID();
     const next = [...accounts, { id, handle: h }];
     setAccounts(next);
@@ -86,13 +88,17 @@ function SwitchProfilePage() {
   }
 
   const all: PinAccount[] = [
-    { id: "primary", handle: primary?.handle ?? "your-pinterest", label: primary?.name ?? "Primary" },
+    {
+      id: "primary",
+      handle: primary?.handle ?? "your-pinterest",
+      label: primary?.name ?? "Primary",
+    },
     ...accounts,
   ];
 
   return (
-    <AppShell title="Switch profile" showBack>
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6 md:px-0">
+    <AppShell title="Switch profile" backButton backTo="/dashboard">
+      <div className="mx-auto max-w-2xl space-y-4">
         <div className="rounded-2xl border border-border bg-surface/85 p-5 shadow-elevate">
           <div className="mb-4 flex items-center gap-2">
             <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-primary text-primary-foreground shadow-glow">
@@ -109,8 +115,19 @@ function SwitchProfilePage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…
+            <div className="space-y-2">
+              {Array.from({ length: 2 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 p-3"
+                >
+                  <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-28 rounded-full" />
+                    <Skeleton className="h-2.5 w-16 rounded-full" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -135,9 +152,7 @@ function SwitchProfilePage() {
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold">@{a.handle}</div>
                         {a.label && (
-                          <div className="truncate text-xs text-muted-foreground">
-                            {a.label}
-                          </div>
+                          <div className="truncate text-xs text-muted-foreground">{a.label}</div>
                         )}
                       </div>
                       {isActive && <Check className="h-4 w-4 text-primary" />}

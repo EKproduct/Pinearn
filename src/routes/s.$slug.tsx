@@ -7,7 +7,7 @@ const DEFAULT_BACKGROUND =
   "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
 
 export const getPublicStorefront = createServerFn({ method: "GET" })
-  .inputValidator((d: { slug: string }) => z.object({ slug: z.string() }).parse(d))
+  .validator((d: { slug: string }) => z.object({ slug: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { createClient } = await import("@supabase/supabase-js");
     const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_PUBLISHABLE_KEY!, {
@@ -41,11 +41,7 @@ export const getPublicStorefront = createServerFn({ method: "GET" })
           .eq("storefront_id", store.id)
           .is("hidden_from_storefront_at", null)
           .order("position", { ascending: true }),
-        sb
-          .from("profiles")
-          .select("avatar_url,display_name")
-          .eq("id", store.user_id)
-          .maybeSingle(),
+        sb.from("profiles").select("avatar_url,display_name").eq("id", store.user_id).maybeSingle(),
       ]);
     const boardIds = (boards ?? []).map((b) => b.id);
     let boardCollections: { board_id: string; collection_id: string }[] = [];
@@ -94,7 +90,14 @@ export const Route = createFileRoute("/s/$slug")({
 });
 
 function PublicStorefront() {
-  const { store, collections: allCollections, pins, boards, boardCollections, profile } = Route.useLoaderData();
+  const {
+    store,
+    collections: allCollections,
+    pins,
+    boards,
+    boardCollections,
+    profile,
+  } = Route.useLoaderData();
   type C = (typeof allCollections)[number];
   type P = (typeof pins)[number];
   type B = (typeof boards)[number];
@@ -231,7 +234,7 @@ function PublicStorefront() {
         )}
       </main>
 
-      <footer className="py-8 text-center text-xs text-muted-foreground">
+      <footer className="px-6 py-8 text-center text-xs text-muted-foreground">
         Powered by{" "}
         <Link to="/" className="text-primary hover:underline">
           Pinearn

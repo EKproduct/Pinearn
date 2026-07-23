@@ -22,6 +22,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { supabase } from "@/integrations/supabase/client";
 import { Toaster } from "sonner";
+import { MonetizationFloater } from "@/components/monetization-floater";
 
 function NotFoundComponent() {
   return (
@@ -135,7 +136,11 @@ function RootShell({ children }: { children: ReactNode }) {
   // (harmless) value here suppresses the buggy auto-injection at its exact
   // source — every other component in the app keeps the real dev feature.
   return (
-    <html lang="en" data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}>
+    <html
+      lang="en"
+      className="scroll-smooth"
+      data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}
+    >
       <head data-tsd-source={import.meta.env.DEV ? "root-shell" : undefined}>
         <HeadContent />
       </head>
@@ -163,7 +168,8 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <Outlet />
-      <Toaster theme="light" position="top-right" richColors />
+      <MonetizationFloater />
+      <Toaster theme="light" position="top-right" richColors closeButton duration={2500} />
     </QueryClientProvider>
   );
 }
