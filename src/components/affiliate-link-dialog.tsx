@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Clipboard, Loader2, X, Link as LinkIcon, Copy, Store, Share2, Check, ArrowLeft, Plus } from "lucide-react";
+import {
+  Clipboard,
+  Loader2,
+  X,
+  Link as LinkIcon,
+  Copy,
+  Store,
+  Share2,
+  Check,
+  ArrowLeft,
+  Plus,
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { toast } from "sonner";
@@ -12,7 +23,7 @@ export function openAffiliateLinkDialog() {
   window.dispatchEvent(new CustomEvent(OPEN_AFFILIATE_DIALOG_EVENT));
 }
 
-type CreatedProduct = {
+export type CreatedProduct = {
   id: string;
   affiliate_url: string;
   storefront_id: string;
@@ -176,7 +187,9 @@ export function AffiliateLinkDialog() {
             />
           ) : (
             <>
-              <h2 className="font-display text-2xl font-bold text-foreground">Create Your Affiliate Link</h2>
+              <h2 className="font-display text-2xl font-bold text-foreground">
+                Create Your Affiliate Link
+              </h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 Paste any product URL and we'll add it to your storefront instantly.
               </p>
@@ -228,7 +241,7 @@ export function AffiliateLinkDialog() {
   );
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
+export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -277,14 +290,11 @@ type ShareSheetProps = {
   onCreateAnother: () => void;
 };
 
-function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareSheetProps) {
+export function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareSheetProps) {
   const [copied, setCopied] = useState(false);
 
   const encoded = useMemo(() => encodeURIComponent(link), [link]);
-  const shareText = useMemo(
-    () => encodeURIComponent("Check this out 👀"),
-    [],
-  );
+  const shareText = useMemo(() => encodeURIComponent("Check this out 👀"), []);
 
   async function handleCopy() {
     await onCopy();
@@ -345,22 +355,28 @@ function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareS
       label: "Pinterest",
       onClick: () =>
         openUrl(`https://pinterest.com/pin/create/button/?url=${encoded}&description=${shareText}`),
-      node: <SocialIcon bg="#E60023"><PinterestSvg /></SocialIcon>,
+      node: (
+        <SocialIcon bg="#E60023">
+          <PinterestSvg />
+        </SocialIcon>
+      ),
     },
     {
       key: "whatsapp",
       label: "WhatsApp",
       onClick: () => openUrl(`https://wa.me/?text=${shareText}%20${encoded}`),
-      node: <SocialIcon bg="#25D366"><WhatsAppSvg /></SocialIcon>,
+      node: (
+        <SocialIcon bg="#25D366">
+          <WhatsAppSvg />
+        </SocialIcon>
+      ),
     },
     {
       key: "instagram",
       label: "Instagram",
       onClick: instagramShare,
       node: (
-        <SocialIcon
-          bg="radial-gradient(circle at 30% 110%, #FFDD55 0%, #FF543E 45%, #C837AB 75%, #5851DB 100%)"
-        >
+        <SocialIcon bg="radial-gradient(circle at 30% 110%, #FFDD55 0%, #FF543E 45%, #C837AB 75%, #5851DB 100%)">
           <InstagramSvg />
         </SocialIcon>
       ),
@@ -368,23 +384,32 @@ function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareS
     {
       key: "facebook",
       label: "Facebook",
-      onClick: () =>
-        openUrl(`https://www.facebook.com/sharer/sharer.php?u=${encoded}`),
-      node: <SocialIcon bg="#1877F2"><FacebookSvg /></SocialIcon>,
+      onClick: () => openUrl(`https://www.facebook.com/sharer/sharer.php?u=${encoded}`),
+      node: (
+        <SocialIcon bg="#1877F2">
+          <FacebookSvg />
+        </SocialIcon>
+      ),
     },
     {
       key: "x",
       label: "X",
-      onClick: () =>
-        openUrl(`https://twitter.com/intent/tweet?text=${shareText}&url=${encoded}`),
-      node: <SocialIcon bg="#000000"><XSvg /></SocialIcon>,
+      onClick: () => openUrl(`https://twitter.com/intent/tweet?text=${shareText}&url=${encoded}`),
+      node: (
+        <SocialIcon bg="#000000">
+          <XSvg />
+        </SocialIcon>
+      ),
     },
     {
       key: "telegram",
       label: "Telegram",
-      onClick: () =>
-        openUrl(`https://t.me/share/url?url=${encoded}&text=${shareText}`),
-      node: <SocialIcon bg="#229ED9"><TelegramSvg /></SocialIcon>,
+      onClick: () => openUrl(`https://t.me/share/url?url=${encoded}&text=${shareText}`),
+      node: (
+        <SocialIcon bg="#229ED9">
+          <TelegramSvg />
+        </SocialIcon>
+      ),
     },
     {
       key: "more",
@@ -457,7 +482,7 @@ function ShareSheet({ link, onCopy, onAddToStorefront, onCreateAnother }: ShareS
   );
 }
 
-function CollectionPicker({
+export function CollectionPicker({
   product,
   onDone,
 }: {
@@ -478,7 +503,12 @@ function CollectionPicker({
         .is("hidden_from_storefront_at", null)
         .order("position", { ascending: true });
       if (error) throw error;
-      return data as { id: string; name: string; cover_image_url: string | null; cover_color: string | null }[];
+      return data as {
+        id: string;
+        name: string;
+        cover_image_url: string | null;
+        cover_color: string | null;
+      }[];
     },
   });
 
@@ -507,7 +537,13 @@ function CollectionPicker({
       const { data: userRes } = await supabase.auth.getUser();
       const userId = userRes.user?.id;
       if (!userId) throw new Error("Not signed in");
-      const slug = `${trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "collection"}-${Math.random().toString(36).slice(2, 5)}`;
+      const slug = `${
+        trimmed
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "")
+          .slice(0, 40) || "collection"
+      }-${Math.random().toString(36).slice(2, 5)}`;
       const { data: inserted, error } = await supabase
         .from("collections")
         .insert({
@@ -593,8 +629,7 @@ function CollectionPicker({
                   <div
                     className="relative aspect-square w-full"
                     style={{
-                      background:
-                        c.cover_color ?? "linear-gradient(135deg,#E60023,#F5E1D5)",
+                      background: c.cover_color ?? "linear-gradient(135deg,#E60023,#F5E1D5)",
                     }}
                   >
                     {c.cover_image_url ? (
@@ -684,7 +719,14 @@ function WhatsAppSvg() {
 
 function InstagramSvg() {
   return (
-    <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      className="h-7 w-7"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden
+    >
       <rect x="3" y="3" width="18" height="18" rx="5" />
       <circle cx="12" cy="12" r="4" />
       <circle cx="17.5" cy="6.5" r="1.2" fill="currentColor" stroke="none" />

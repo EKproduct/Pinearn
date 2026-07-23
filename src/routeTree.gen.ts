@@ -14,6 +14,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SSlugRouteImport } from './routes/s.$slug'
+import { Route as PinterestCallbackRouteImport } from './routes/pinterest.callback'
 import { Route as AuthenticatedSwitchProfileRouteImport } from './routes/_authenticated/switch-profile'
 import { Route as AuthenticatedStorefrontRouteImport } from './routes/_authenticated/storefront'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
@@ -24,6 +25,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedBrandsRouteImport } from './routes/_authenticated/brands'
 import { Route as AuthenticatedAnalyticsRouteImport } from './routes/_authenticated/analytics'
 import { Route as AuthenticatedPinsPreviewRouteImport } from './routes/_authenticated/pins_.preview'
+import { Route as AuthenticatedPinsMonetizeBoardRouteImport } from './routes/_authenticated/pins_.monetize-board'
 import { Route as AuthenticatedPinsCreateRouteImport } from './routes/_authenticated/pins_.create'
 import { Route as AuthenticatedPinsAttachRouteImport } from './routes/_authenticated/pins_.attach'
 import { Route as AuthenticatedBrandsBrandIdRouteImport } from './routes/_authenticated/brands_.$brandId'
@@ -51,6 +53,11 @@ const IndexRoute = IndexRouteImport.update({
 const SSlugRoute = SSlugRouteImport.update({
   id: '/s/$slug',
   path: '/s/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PinterestCallbackRoute = PinterestCallbackRouteImport.update({
+  id: '/pinterest/callback',
+  path: '/pinterest/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedSwitchProfileRoute =
@@ -105,6 +112,12 @@ const AuthenticatedPinsPreviewRoute =
     path: '/pins/preview',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedPinsMonetizeBoardRoute =
+  AuthenticatedPinsMonetizeBoardRouteImport.update({
+    id: '/pins_/monetize-board',
+    path: '/pins/monetize-board',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedPinsCreateRoute = AuthenticatedPinsCreateRouteImport.update({
   id: '/pins_/create',
   path: '/pins/create',
@@ -141,10 +154,12 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthenticatedSettingsRoute
   '/storefront': typeof AuthenticatedStorefrontRoute
   '/switch-profile': typeof AuthenticatedSwitchProfileRoute
+  '/pinterest/callback': typeof PinterestCallbackRoute
   '/s/$slug': typeof SSlugRoute
   '/brands/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/pins/attach': typeof AuthenticatedPinsAttachRoute
   '/pins/create': typeof AuthenticatedPinsCreateRoute
+  '/pins/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/pins/preview': typeof AuthenticatedPinsPreviewRoute
   '/collections/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -161,10 +176,12 @@ export interface FileRoutesByTo {
   '/settings': typeof AuthenticatedSettingsRoute
   '/storefront': typeof AuthenticatedStorefrontRoute
   '/switch-profile': typeof AuthenticatedSwitchProfileRoute
+  '/pinterest/callback': typeof PinterestCallbackRoute
   '/s/$slug': typeof SSlugRoute
   '/brands/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/pins/attach': typeof AuthenticatedPinsAttachRoute
   '/pins/create': typeof AuthenticatedPinsCreateRoute
+  '/pins/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/pins/preview': typeof AuthenticatedPinsPreviewRoute
   '/collections/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -183,10 +200,12 @@ export interface FileRoutesById {
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/storefront': typeof AuthenticatedStorefrontRoute
   '/_authenticated/switch-profile': typeof AuthenticatedSwitchProfileRoute
+  '/pinterest/callback': typeof PinterestCallbackRoute
   '/s/$slug': typeof SSlugRoute
   '/_authenticated/brands_/$brandId': typeof AuthenticatedBrandsBrandIdRoute
   '/_authenticated/pins_/attach': typeof AuthenticatedPinsAttachRoute
   '/_authenticated/pins_/create': typeof AuthenticatedPinsCreateRoute
+  '/_authenticated/pins_/monetize-board': typeof AuthenticatedPinsMonetizeBoardRoute
   '/_authenticated/pins_/preview': typeof AuthenticatedPinsPreviewRoute
   '/_authenticated/collections_/$id/attach': typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -205,10 +224,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/storefront'
     | '/switch-profile'
+    | '/pinterest/callback'
     | '/s/$slug'
     | '/brands/$brandId'
     | '/pins/attach'
     | '/pins/create'
+    | '/pins/monetize-board'
     | '/pins/preview'
     | '/collections/$id/attach'
   fileRoutesByTo: FileRoutesByTo
@@ -225,10 +246,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/storefront'
     | '/switch-profile'
+    | '/pinterest/callback'
     | '/s/$slug'
     | '/brands/$brandId'
     | '/pins/attach'
     | '/pins/create'
+    | '/pins/monetize-board'
     | '/pins/preview'
     | '/collections/$id/attach'
   id:
@@ -246,10 +269,12 @@ export interface FileRouteTypes {
     | '/_authenticated/settings'
     | '/_authenticated/storefront'
     | '/_authenticated/switch-profile'
+    | '/pinterest/callback'
     | '/s/$slug'
     | '/_authenticated/brands_/$brandId'
     | '/_authenticated/pins_/attach'
     | '/_authenticated/pins_/create'
+    | '/_authenticated/pins_/monetize-board'
     | '/_authenticated/pins_/preview'
     | '/_authenticated/collections_/$id/attach'
   fileRoutesById: FileRoutesById
@@ -259,6 +284,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   PrivacyRoute: typeof PrivacyRoute
+  PinterestCallbackRoute: typeof PinterestCallbackRoute
   SSlugRoute: typeof SSlugRoute
 }
 
@@ -297,6 +323,13 @@ declare module '@tanstack/react-router' {
       path: '/s/$slug'
       fullPath: '/s/$slug'
       preLoaderRoute: typeof SSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pinterest/callback': {
+      id: '/pinterest/callback'
+      path: '/pinterest/callback'
+      fullPath: '/pinterest/callback'
+      preLoaderRoute: typeof PinterestCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/switch-profile': {
@@ -369,6 +402,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPinsPreviewRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/pins_/monetize-board': {
+      id: '/_authenticated/pins_/monetize-board'
+      path: '/pins/monetize-board'
+      fullPath: '/pins/monetize-board'
+      preLoaderRoute: typeof AuthenticatedPinsMonetizeBoardRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/pins_/create': {
       id: '/_authenticated/pins_/create'
       path: '/pins/create'
@@ -413,6 +453,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedBrandsBrandIdRoute: typeof AuthenticatedBrandsBrandIdRoute
   AuthenticatedPinsAttachRoute: typeof AuthenticatedPinsAttachRoute
   AuthenticatedPinsCreateRoute: typeof AuthenticatedPinsCreateRoute
+  AuthenticatedPinsMonetizeBoardRoute: typeof AuthenticatedPinsMonetizeBoardRoute
   AuthenticatedPinsPreviewRoute: typeof AuthenticatedPinsPreviewRoute
   AuthenticatedCollectionsIdAttachRoute: typeof AuthenticatedCollectionsIdAttachRoute
 }
@@ -430,6 +471,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedBrandsBrandIdRoute: AuthenticatedBrandsBrandIdRoute,
   AuthenticatedPinsAttachRoute: AuthenticatedPinsAttachRoute,
   AuthenticatedPinsCreateRoute: AuthenticatedPinsCreateRoute,
+  AuthenticatedPinsMonetizeBoardRoute: AuthenticatedPinsMonetizeBoardRoute,
   AuthenticatedPinsPreviewRoute: AuthenticatedPinsPreviewRoute,
   AuthenticatedCollectionsIdAttachRoute: AuthenticatedCollectionsIdAttachRoute,
 }
@@ -442,6 +484,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   PrivacyRoute: PrivacyRoute,
+  PinterestCallbackRoute: PinterestCallbackRoute,
   SSlugRoute: SSlugRoute,
 }
 export const routeTree = rootRouteImport

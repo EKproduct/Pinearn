@@ -29,9 +29,12 @@ import {
 } from "lucide-react";
 import { Reorder, motion } from "framer-motion";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { importPinterestBoards } from "@/lib/pinterest.functions";
+import { importPinterestBoards, takeDownCollection } from "@/lib/pinterest.functions";
 import { PinterestSyncModal } from "@/components/pinterest-sync-modal";
+import { SuggestionCard, realProductPrice } from "@/components/suggestion-card";
+import { hostBrand } from "@/lib/brands";
 
 const DEFAULT_BACKGROUND =
   "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
@@ -71,6 +74,8 @@ type Pin = {
   image_url: string | null;
   collection_id: string | null;
   external_url: string | null;
+  product_id: string | null;
+  status: string;
 };
 
 type Board = {
@@ -84,7 +89,11 @@ type BoardCollection = { board_id: string; collection_id: string };
 
 function slugify(s: string) {
   return (
-    s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "board"
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40) || "board"
   );
 }
 
@@ -115,7 +124,9 @@ function StorefrontPage() {
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [showEditStore, setShowEditStore] = useState(false);
   const [coverPickerFor, setCoverPickerFor] = useState<string | null>(null);
-  const [viewCollectionFor, setViewCollectionFor] = useState<string | null>(search.collection ?? null);
+  const [viewCollectionFor, setViewCollectionFor] = useState<string | null>(
+    search.collection ?? null,
+  );
   const [viewBoardFor, setViewBoardFor] = useState<string | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const bgInputRef = useRef<HTMLInputElement>(null);
@@ -179,8 +190,9 @@ function StorefrontPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("pins")
-        .select("id,title,image_url,collection_id,external_url")
+        .select("id,title,image_url,collection_id,external_url,product_id,status")
         .eq("storefront_id", storefront!.id)
+        .eq("is_owner", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as Pin[];
@@ -242,7 +254,8 @@ function StorefrontPage() {
       const { data: userRes } = await supabase.auth.getUser();
       let coverUrl: string | null = null;
       if (p.coverFile) coverUrl = await uploadCover(p.coverFile, "collections");
-      const topPos = collections.length > 0 ? Math.min(...collections.map((c) => c.position)) - 1 : 0;
+      const topPos =
+        collections.length > 0 ? Math.min(...collections.map((c) => c.position)) - 1 : 0;
       const { data: inserted, error } = await supabase
         .from("collections")
         .insert({
@@ -271,21 +284,22 @@ function StorefrontPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-
-
+  const runTakeDownCollection = useServerFn(takeDownCollection);
+  // "Remove from storefront" = take the collection down: every pin in it
+  // returns to the available-to-attach pool (back under its board), its
+  // products detach, and the collection is removed. Pins and boards are
+  // preserved — nothing is lost.
   const hideCollection = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from("collections")
-        .update({ hidden_from_storefront_at: new Date().toISOString() })
-        .eq("id", id);
-      if (error) throw error;
+      await runTakeDownCollection({ data: { collectionId: id } });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["collections", storefront?.id] });
+      qc.invalidateQueries({ queryKey: ["pins", storefront?.id] });
       setCoverPickerFor(null);
-      toast.success("Removed from storefront");
+      toast.success("Taken down — pins back in available to attach");
     },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const setCollectionCover = useMutation({
@@ -306,9 +320,7 @@ function StorefrontPage() {
   const saveCollectionOrder = useMutation({
     mutationFn: async (ids: string[]) => {
       await Promise.all(
-        ids.map((id, idx) =>
-          supabase.from("collections").update({ position: idx }).eq("id", id),
-        ),
+        ids.map((id, idx) => supabase.from("collections").update({ position: idx }).eq("id", id)),
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["collections", storefront?.id] }),
@@ -318,9 +330,7 @@ function StorefrontPage() {
   const saveBoardOrder = useMutation({
     mutationFn: async (ids: string[]) => {
       await Promise.all(
-        ids.map((id, idx) =>
-          supabase.from("boards").update({ position: idx }).eq("id", id),
-        ),
+        ids.map((id, idx) => supabase.from("boards").update({ position: idx }).eq("id", id)),
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["boards", storefront?.id] }),
@@ -346,6 +356,9 @@ function StorefrontPage() {
 
   const createBoard = useMutation({
     mutationFn: async (p: { name: string; coverFile: File | null; collectionIds: string[] }) => {
+      if (p.collectionIds.length === 0) {
+        throw new Error("Boards are built from your existing collections — pick at least one.");
+      }
       const { data: userRes } = await supabase.auth.getUser();
       let coverUrl: string | null = null;
       if (p.coverFile) coverUrl = await uploadCover(p.coverFile, "boards");
@@ -444,9 +457,24 @@ function StorefrontPage() {
     return map;
   }, [boardCollections]);
 
+  // A collection only counts as "in the storefront" once at least one of its
+  // pins is actually live — a pin only goes live from the preview page's
+  // explicit Go Live button (which requires a real product attached), so
+  // this is the one true signal, not just "has a product_id" (a pin can have
+  // a product picked mid-edit without ever having gone live).
+  const pinsWithProduct = useMemo(() => pins.filter((p) => p.status === "live"), [pins]);
+  const storefrontCollections = useMemo(
+    () => collections.filter((c) => pinsWithProduct.some((p) => p.collection_id === c.id)),
+    [collections, pinsWithProduct],
+  );
+  const storefrontCollectionIds = useMemo(
+    () => new Set(storefrontCollections.map((c) => c.id)),
+    [storefrontCollections],
+  );
+
   if (sfLoading) {
     return (
-      <AppShell title="My Store" backButton hideNotifications>
+      <AppShell title="My Store">
         <SkeletonRows />
       </AppShell>
     );
@@ -454,7 +482,7 @@ function StorefrontPage() {
 
   if (!storefront) {
     return (
-      <AppShell title="My Store" backButton hideNotifications>
+      <AppShell title="My Store">
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center">
           <p className="text-sm text-muted-foreground">
             Your storefront is being set up. Refresh in a moment.
@@ -471,8 +499,6 @@ function StorefrontPage() {
   return (
     <AppShell
       title="My Store"
-      backButton
-      hideNotifications
       inlineActions
       actions={
         <Link
@@ -492,11 +518,7 @@ function StorefrontPage() {
           role="button"
           aria-label="Upload background"
         >
-          <img
-            src={backgroundUrl}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-          />
+          <FadeImage src={backgroundUrl} className="absolute inset-0 h-full w-full object-cover" />
           <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-background" />
         </div>
         {storefront.background_image_url && (
@@ -531,9 +553,8 @@ function StorefrontPage() {
           aria-label="Change profile picture"
         >
           {profile?.avatar_url ? (
-            <img
+            <FadeImage
               src={profile.avatar_url}
-              alt=""
               className="absolute inset-0 h-full w-full object-cover"
             />
           ) : (
@@ -561,7 +582,8 @@ function StorefrontPage() {
         </label>
         <h2 className="mt-3 font-display text-xl font-semibold">{storefront.name}</h2>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-          {storefront.description ?? "Hey, welcome to my store — curated picks and affiliate finds."}
+          {storefront.description ??
+            "Hey, welcome to my store — curated picks and affiliate finds."}
         </p>
         <div className="mt-5 flex items-center gap-2">
           <button
@@ -585,40 +607,71 @@ function StorefrontPage() {
                   const items: { label: string; icon: ReactNode; onClick: () => void }[] = [
                     {
                       label: "Pinterest",
-                      icon: <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12c0 5 3.1 9.4 7.5 11.1-.1-.9-.2-2.4 0-3.4.2-.9 1.4-5.7 1.4-5.7s-.4-.7-.4-1.8c0-1.7 1-2.9 2.2-2.9 1 0 1.5.8 1.5 1.7 0 1-.7 2.6-1 4-.3 1.2.6 2.1 1.7 2.1 2.1 0 3.7-2.2 3.7-5.4 0-2.8-2-4.8-4.9-4.8-3.3 0-5.3 2.5-5.3 5.1 0 1 .4 2.1.9 2.7.1.1.1.2.1.3-.1.4-.3 1.2-.3 1.4-.1.2-.2.3-.4.2-1.5-.7-2.4-2.9-2.4-4.6 0-3.8 2.7-7.2 7.9-7.2 4.1 0 7.3 3 7.3 6.9 0 4.1-2.6 7.5-6.2 7.5-1.2 0-2.4-.6-2.8-1.4l-.7 2.9c-.3 1-1 2.3-1.5 3.1 1.1.3 2.3.5 3.5.5 6.6 0 12-5.4 12-12S18.6 0 12 0z"/></svg>,
-                      onClick: () => window.open(`https://pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedText}`, "_blank"),
+                      icon: (
+                        <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
+                          <path d="M12 0C5.4 0 0 5.4 0 12c0 5 3.1 9.4 7.5 11.1-.1-.9-.2-2.4 0-3.4.2-.9 1.4-5.7 1.4-5.7s-.4-.7-.4-1.8c0-1.7 1-2.9 2.2-2.9 1 0 1.5.8 1.5 1.7 0 1-.7 2.6-1 4-.3 1.2.6 2.1 1.7 2.1 2.1 0 3.7-2.2 3.7-5.4 0-2.8-2-4.8-4.9-4.8-3.3 0-5.3 2.5-5.3 5.1 0 1 .4 2.1.9 2.7.1.1.1.2.1.3-.1.4-.3 1.2-.3 1.4-.1.2-.2.3-.4.2-1.5-.7-2.4-2.9-2.4-4.6 0-3.8 2.7-7.2 7.9-7.2 4.1 0 7.3 3 7.3 6.9 0 4.1-2.6 7.5-6.2 7.5-1.2 0-2.4-.6-2.8-1.4l-.7 2.9c-.3 1-1 2.3-1.5 3.1 1.1.3 2.3.5 3.5.5 6.6 0 12-5.4 12-12S18.6 0 12 0z" />
+                        </svg>
+                      ),
+                      onClick: () =>
+                        window.open(
+                          `https://pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedText}`,
+                          "_blank",
+                        ),
                     },
                     {
                       label: "WhatsApp",
                       icon: <MessageCircle className="h-5 w-5" />,
-                      onClick: () => window.open(`https://wa.me/?text=${encodedText}%20${encodedUrl}`, "_blank"),
+                      onClick: () =>
+                        window.open(`https://wa.me/?text=${encodedText}%20${encodedUrl}`, "_blank"),
                     },
                     {
                       label: "Telegram",
                       icon: <Send className="h-5 w-5" />,
-                      onClick: () => window.open(`https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`, "_blank"),
+                      onClick: () =>
+                        window.open(
+                          `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`,
+                          "_blank",
+                        ),
                     },
                     {
                       label: "X",
                       icon: <Twitter className="h-5 w-5" />,
-                      onClick: () => window.open(`https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`, "_blank"),
+                      onClick: () =>
+                        window.open(
+                          `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`,
+                          "_blank",
+                        ),
                     },
                     {
                       label: "Facebook",
                       icon: <Facebook className="h-5 w-5" />,
-                      onClick: () => window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`, "_blank"),
+                      onClick: () =>
+                        window.open(
+                          `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`,
+                          "_blank",
+                        ),
                     },
                     {
                       label: "Email",
                       icon: <Mail className="h-5 w-5" />,
-                      onClick: () => { window.location.href = `mailto:?subject=${encodeURIComponent(storefront.name)}&body=${encodedText}%20${encodedUrl}`; },
+                      onClick: () => {
+                        window.location.href = `mailto:?subject=${encodeURIComponent(storefront.name)}&body=${encodedText}%20${encodedUrl}`;
+                      },
                     },
                     {
                       label: "More",
                       icon: <Share2 className="h-5 w-5" />,
                       onClick: async () => {
                         if (navigator.share) {
-                          try { await navigator.share({ title: storefront.name, text: shareText, url: publicUrl }); } catch {}
+                          try {
+                            await navigator.share({
+                              title: storefront.name,
+                              text: shareText,
+                              url: publicUrl,
+                            });
+                          } catch {
+                            /* user dismissed the native share sheet */
+                          }
                         } else {
                           navigator.clipboard.writeText(publicUrl);
                           toast.success("Link copied");
@@ -628,7 +681,10 @@ function StorefrontPage() {
                     {
                       label: "Copy",
                       icon: <Copy className="h-5 w-5" />,
-                      onClick: () => { navigator.clipboard.writeText(publicUrl); toast.success("Link copied"); },
+                      onClick: () => {
+                        navigator.clipboard.writeText(publicUrl);
+                        toast.success("Link copied");
+                      },
                     },
                   ];
                   return items.map((it) => (
@@ -677,11 +733,9 @@ function StorefrontPage() {
       {/* Section header */}
       <section>
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-display text-base font-semibold">
-            {"\n"}
-          </h3>
+          <h3 className="font-display text-base font-semibold">{"\n"}</h3>
           <div className="flex items-center gap-2">
-            {(tab === "collections" ? collections.length : boards.length) >= 2 && (
+            {(tab === "collections" ? storefrontCollections.length : boards.length) >= 2 && (
               <button
                 onClick={() => setReorderOpen(true)}
                 className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
@@ -707,32 +761,43 @@ function StorefrontPage() {
         </div>
 
         {tab === "collections" ? (
-          collections.length === 0 ? (
+          storefrontCollections.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center">
               <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-primary shadow-glow">
                 <Layers className="h-6 w-6 text-primary-foreground" />
               </div>
               <h4 className="mt-4 font-display text-base font-semibold">No collections yet</h4>
               <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
-                Sync your Pinterest boards or create a collection to start.
+                {collections.length === 0
+                  ? "Sync your Pinterest boards or create a collection to start."
+                  : "Attach a product to a pin and its collection will appear here automatically."}
               </p>
-              <button
-                onClick={startSync}
-                disabled={runImport.isPending}
-                className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
-              >
-                {runImport.isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5" />
-                )}
-                {runImport.isPending ? "Syncing…" : "Sync Pinterest"}
-              </button>
+              {collections.length === 0 ? (
+                <button
+                  onClick={startSync}
+                  disabled={runImport.isPending}
+                  className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow disabled:opacity-60"
+                >
+                  {runImport.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  {runImport.isPending ? "Syncing…" : "Sync Pinterest"}
+                </button>
+              ) : (
+                <button
+                  onClick={() => navigate({ to: "/pins/attach" } as never)}
+                  className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Attach products
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
-              {collections.map((c) => {
-                const cPins = pins.filter((p) => p.collection_id === c.id);
+              {storefrontCollections.map((c) => {
+                const cPins = pinsWithProduct.filter((p) => p.collection_id === c.id);
                 const coverUrl =
                   c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null;
                 return (
@@ -749,7 +814,7 @@ function StorefrontPage() {
                     onRemove={() => {
                       if (
                         confirm(
-                          `Remove "${c.name}" from storefront? It stays saved and still tags your products.`,
+                          `Remove "${c.name}" from storefront? Its pins go back to available-to-attach and their products are detached.`,
                         )
                       ) {
                         hideCollection.mutate(c.id);
@@ -780,13 +845,16 @@ function StorefrontPage() {
           <div className="grid grid-cols-2 gap-4">
             {boards.map((b) => {
               const memberIds = collectionsByBoard.get(b.id) ?? [];
-              const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+              const memberCollections = collections.filter(
+                (c) => memberIds.includes(c.id) && storefrontCollectionIds.has(c.id),
+              );
               let coverUrl = b.cover_image_url;
               const mosaic: string[] = [];
               for (const mc of memberCollections) {
                 const img =
                   mc.cover_image_url ??
-                  pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                  pinsWithProduct.find((p) => p.collection_id === mc.id && p.image_url)
+                    ?.image_url ??
                   null;
                 if (img) mosaic.push(img);
               }
@@ -795,7 +863,7 @@ function StorefrontPage() {
                 <BoardCard
                   key={b.id}
                   name={b.name}
-                  count={memberIds.length}
+                  count={memberCollections.length}
                   coverUrl={coverUrl}
                   mosaic={mosaic}
                   brandColor={brandColor}
@@ -836,7 +904,7 @@ function StorefrontPage() {
 
       {showNewBoard && (
         <NewBoardDialog
-          collections={collections}
+          collections={storefrontCollections}
           onCancel={() => setShowNewBoard(false)}
           onCreate={(v) => createBoard.mutate(v)}
           onCreateCollection={() => {
@@ -889,6 +957,10 @@ function StorefrontPage() {
             setViewBoardFor(null);
             setViewCollectionFor(id);
           }}
+          onCreateCollection={() => {
+            setViewBoardFor(null);
+            setShowNewCollection(true);
+          }}
           onClose={() => setViewBoardFor(null)}
         />
       )}
@@ -933,25 +1005,29 @@ function StorefrontPage() {
           title={tab === "collections" ? "Reorder collections" : "Reorder boards"}
           items={
             tab === "collections"
-              ? collections.map((c) => {
-                  const cPins = pins.filter((p) => p.collection_id === c.id);
+              ? storefrontCollections.map((c) => {
+                  const cPins = pinsWithProduct.filter((p) => p.collection_id === c.id);
                   return {
                     id: c.id,
                     name: c.name,
                     subtitle: `${cPins.length} product${cPins.length === 1 ? "" : "s"}`,
-                    coverUrl: c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null,
+                    coverUrl:
+                      c.cover_image_url ?? cPins.find((p) => p.image_url)?.image_url ?? null,
                     coverColor: c.cover_color,
                   };
                 })
               : boards.map((b) => {
                   const memberIds = collectionsByBoard.get(b.id) ?? [];
-                  const memberCollections = collections.filter((c) => memberIds.includes(c.id));
+                  const memberCollections = collections.filter(
+                    (c) => memberIds.includes(c.id) && storefrontCollectionIds.has(c.id),
+                  );
                   let coverUrl = b.cover_image_url;
                   if (!coverUrl) {
                     for (const mc of memberCollections) {
                       const img =
                         mc.cover_image_url ??
-                        pins.find((p) => p.collection_id === mc.id && p.image_url)?.image_url ??
+                        pinsWithProduct.find((p) => p.collection_id === mc.id && p.image_url)
+                          ?.image_url ??
                         null;
                       if (img) {
                         coverUrl = img;
@@ -962,7 +1038,7 @@ function StorefrontPage() {
                   return {
                     id: b.id,
                     name: b.name,
-                    subtitle: `${memberIds.length} collection${memberIds.length === 1 ? "" : "s"}`,
+                    subtitle: `${memberCollections.length} collection${memberCollections.length === 1 ? "" : "s"}`,
                     coverUrl,
                     coverColor: null,
                   };
@@ -981,17 +1057,51 @@ function StorefrontPage() {
   );
 }
 
+// Fade-in wrapper for remote/user-uploaded images (covers, avatars, product
+// thumbnails) — starts transparent and eases in once loaded, so slow images
+// don't pop in. Purely presentational; onError/other behavior is untouched.
+function FadeImage({
+  src,
+  alt = "",
+  className = "",
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onLoad={() => setLoaded(true)}
+      className={`${className} opacity-0 transition-opacity duration-300 ${loaded ? "opacity-100" : ""}`}
+    />
+  );
+}
+
 function SkeletonRows() {
   return (
     <div className="space-y-6">
-      <div className="flex flex-col items-center gap-3 py-2">
-        <div className="h-24 w-24 rounded-full bg-surface-2 animate-pulse" />
-        <div className="h-5 w-40 rounded-full bg-surface-2 animate-pulse" />
-        <div className="h-4 w-56 rounded-full bg-surface-2 animate-pulse" />
+      {/* Background band */}
+      <Skeleton className="-mx-4 -mt-4 h-40 rounded-none sm:-mx-6" />
+      {/* Store header */}
+      <div className="-mt-16 flex flex-col items-center gap-3 py-2">
+        <Skeleton className="h-24 w-24 rounded-full ring-4 ring-background" />
+        <Skeleton className="h-5 w-40 rounded-full" />
+        <Skeleton className="h-4 w-56 rounded-full" />
+        <div className="mt-2 flex gap-2">
+          <Skeleton className="h-9 w-20 rounded-full" />
+          <Skeleton className="h-9 w-20 rounded-full" />
+        </div>
       </div>
+      {/* Tabs */}
+      <Skeleton className="h-11 w-full rounded-full" />
+      {/* Collection/board card grid */}
       <div className="grid grid-cols-2 gap-4">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="aspect-square rounded-2xl bg-surface-2 animate-pulse" />
+          <Skeleton key={i} className="aspect-square rounded-2xl" />
         ))}
       </div>
     </div>
@@ -1066,7 +1176,7 @@ function ReorderListDialog({
                   }}
                 >
                   {item.coverUrl ? (
-                    <img src={item.coverUrl} alt="" className="h-full w-full object-cover" />
+                    <FadeImage src={item.coverUrl} className="h-full w-full object-cover" />
                   ) : (
                     <div className="grid h-full w-full place-items-center text-white/80">
                       <ImageIcon className="h-4 w-4" />
@@ -1142,7 +1252,7 @@ function CollectionCard({
           }}
         >
           {coverUrl ? (
-            <img src={coverUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            <FadeImage src={coverUrl} className="absolute inset-0 h-full w-full object-cover" />
           ) : (
             <div className="absolute inset-0 grid place-items-center text-white/80">
               <ImageIcon className="h-8 w-8" />
@@ -1197,18 +1307,14 @@ function BoardCard({
   const side = mosaic.filter((m) => m !== hero).slice(0, 2);
   return (
     <article className="group relative overflow-hidden rounded-2xl border border-border bg-surface shadow-sm transition hover:shadow-md">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="block w-full text-left"
-      >
+      <button type="button" onClick={onOpen} className="block w-full text-left">
         <div
           className="relative grid aspect-square w-full grid-cols-3 gap-0.5"
           style={{ background: `linear-gradient(135deg, ${brandColor}, #F5E1D5)` }}
         >
           <div className="relative col-span-2 row-span-2 overflow-hidden">
             {hero ? (
-              <img src={hero} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              <FadeImage src={hero} className="absolute inset-0 h-full w-full object-cover" />
             ) : (
               <div className="absolute inset-0 grid place-items-center text-white/80">
                 <Layers className="h-8 w-8" />
@@ -1217,12 +1323,12 @@ function BoardCard({
           </div>
           <div className="relative overflow-hidden bg-surface-2">
             {side[0] ? (
-              <img src={side[0]} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              <FadeImage src={side[0]} className="absolute inset-0 h-full w-full object-cover" />
             ) : null}
           </div>
           <div className="relative overflow-hidden bg-surface-2">
             {side[1] ? (
-              <img src={side[1]} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              <FadeImage src={side[1]} className="absolute inset-0 h-full w-full object-cover" />
             ) : null}
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
@@ -1267,12 +1373,10 @@ function NewCollectionDialog({
         <label className="mt-4 block cursor-pointer">
           <div className="relative grid aspect-video w-full place-items-center overflow-hidden rounded-xl border border-dashed border-border bg-surface-2 text-muted-foreground">
             {preview ? (
-              <img src={preview} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              <FadeImage src={preview} className="absolute inset-0 h-full w-full object-cover" />
             ) : (
               <span className="flex items-center gap-2 text-xs">
                 <Camera className="h-4 w-4" /> Upload cover&nbsp;
-
-
               </span>
             )}
           </div>
@@ -1347,11 +1451,10 @@ function NewBoardDialog({
         <label className="mt-4 block cursor-pointer">
           <div className="relative grid aspect-video w-full place-items-center overflow-hidden rounded-xl border border-dashed border-border bg-surface-2 text-muted-foreground">
             {preview ? (
-              <img src={preview} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              <FadeImage src={preview} className="absolute inset-0 h-full w-full object-cover" />
             ) : (
               <span className="flex items-center gap-2 text-xs">
                 <Camera className="h-4 w-4" /> Upload cover&nbsp;
-
               </span>
             )}
           </div>
@@ -1374,7 +1477,9 @@ function NewBoardDialog({
           className="mt-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
         />
         <div className="mt-4">
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Collections in this board</p>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">
+            Collections in this board
+          </p>
           {collections.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border bg-surface-2/40 p-4 text-center">
               <p className="text-xs text-muted-foreground">You don't have any collections yet.</p>
@@ -1401,17 +1506,15 @@ function NewBoardDialog({
                   >
                     <div
                       className={`grid h-5 w-5 place-items-center rounded-full border ${
-                        active ? "border-primary bg-primary text-primary-foreground" : "border-border"
+                        active
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border"
                       }`}
                     >
                       {active && <Check className="h-3 w-3" />}
                     </div>
                     {c.cover_image_url ? (
-                      <img
-                        src={c.cover_image_url}
-                        alt=""
-                        className="h-8 w-8 rounded object-cover"
-                      />
+                      <FadeImage src={c.cover_image_url} className="h-8 w-8 rounded object-cover" />
                     ) : (
                       <div
                         className="h-8 w-8 rounded"
@@ -1433,7 +1536,7 @@ function NewBoardDialog({
             Cancel
           </button>
           <button
-            disabled={!name.trim() || pending}
+            disabled={!name.trim() || selected.size === 0 || pending}
             onClick={() =>
               onCreate({ name: name.trim(), coverFile, collectionIds: Array.from(selected) })
             }
@@ -1442,6 +1545,11 @@ function NewBoardDialog({
             {pending && <Loader2 className="h-4 w-4 animate-spin" />} Create
           </button>
         </div>
+        {collections.length > 0 && selected.size === 0 && (
+          <p className="mt-2 text-right text-[11px] text-muted-foreground">
+            Pick at least one collection — boards are built from your existing collections.
+          </p>
+        )}
       </div>
     </ModalShell>
   );
@@ -1471,10 +1579,7 @@ function CoverPickerDialog({
       >
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <h3 className="text-sm font-semibold">Choose cover · {collection.name}</h3>
-          <button
-            onClick={onClose}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
+          <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">
             Close
           </button>
         </div>
@@ -1510,7 +1615,7 @@ function CoverPickerDialog({
                         : "border-border hover:border-primary/60"
                     }`}
                   >
-                    <img src={p.image_url!} alt="" className="h-full w-full object-cover" />
+                    <FadeImage src={p.image_url!} className="h-full w-full object-cover" />
                   </button>
                 );
               })}
@@ -1571,11 +1676,7 @@ function EditStoreDialog({
             style={{ background: brandColor }}
           >
             {avatarUrl ? (
-              <img
-                src={avatarUrl}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover"
-              />
+              <FadeImage src={avatarUrl} className="absolute inset-0 h-full w-full object-cover" />
             ) : (
               <span>{name[0]?.toUpperCase()}</span>
             )}
@@ -1647,11 +1748,18 @@ function CollectionPinsDialog({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("storefront_products")
-        .select("id,title,image_url,affiliate_url")
+        .select("id,title,image_url,affiliate_url,price_cents,commission_pct")
         .eq("collection_id", collection.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data as { id: string; title: string; image_url: string | null; affiliate_url: string }[];
+      return data as {
+        id: string;
+        title: string;
+        image_url: string | null;
+        affiliate_url: string;
+        price_cents: number | null;
+        commission_pct: number | null;
+      }[];
     },
   });
 
@@ -1679,77 +1787,39 @@ function CollectionPinsDialog({
         </div>
         <div className="max-h-[70vh] overflow-y-auto p-4">
           {totalItems === 0 ? (
-            <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
-              No items in this collection yet.
-            </p>
+            <div className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center">
+              <p className="text-xs text-muted-foreground">No items in this collection yet.</p>
+              <Link
+                to="/collections/$id/attach"
+                params={{ id: collection.id }}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-xs font-medium text-primary-foreground shadow-glow"
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Attach products
+              </Link>
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {products.map((p) => (
-                <a
+                <SuggestionCard
                   key={`prod-${p.id}`}
-                  href={p.affiliate_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block"
-                >
-                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
-                    <div className="relative aspect-square w-full">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.title}
-                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 grid place-items-center bg-gradient-to-br from-primary/20 to-primary/5 text-primary">
-                          <ExternalLink className="h-6 w-6" />
-                        </div>
-                      )}
-                      <span className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-                        Product
-                      </span>
-                    </div>
-                    <div className="p-2">
-                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
-                    </div>
-                  </div>
-                </a>
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                />
               ))}
-              {pins.map((p) => {
-                const Card = (
-                  <div className="group relative overflow-hidden rounded-xl border border-border bg-surface-2">
-                    <div className="relative aspect-square w-full">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.title}
-                          className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                          <ImageIcon className="h-6 w-6" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-2">
-                      <p className="line-clamp-2 text-xs font-medium">{p.title}</p>
-                    </div>
-                  </div>
-                );
-                return p.external_url ? (
-                  <a
-                    key={p.id}
-                    href={p.external_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block"
-                  >
-                    {Card}
-                  </a>
-                ) : (
-                  <div key={p.id}>{Card}</div>
-                );
-              })}
+              {pins.map((p) => (
+                <SuggestionCard
+                  key={`pin-${p.id}`}
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.external_url ?? "")}
+                  link={p.external_url ?? ""}
+                  price={null}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -1764,6 +1834,7 @@ function BoardDialog({
   pins,
   brandColor,
   onOpenCollection,
+  onCreateCollection,
   onClose,
 }: {
   board: Board;
@@ -1771,6 +1842,7 @@ function BoardDialog({
   pins: Pin[];
   brandColor: string;
   onOpenCollection: (id: string) => void;
+  onCreateCollection: () => void;
   onClose: () => void;
 }) {
   return (
@@ -1795,9 +1867,16 @@ function BoardDialog({
         </div>
         <div className="max-h-[70vh] overflow-y-auto p-4">
           {collections.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
-              This board is empty.
-            </p>
+            <div className="rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center">
+              <p className="text-xs text-muted-foreground">This board is empty.</p>
+              <button
+                type="button"
+                onClick={onCreateCollection}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-xs font-medium text-primary-foreground shadow-glow"
+              >
+                <FolderPlus className="h-3.5 w-3.5" /> Create a collection
+              </button>
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
               {collections.map((c) => {
@@ -1818,9 +1897,8 @@ function BoardDialog({
                       }}
                     >
                       {coverUrl ? (
-                        <img
+                        <FadeImage
                           src={coverUrl}
-                          alt=""
                           className="absolute inset-0 h-full w-full object-cover"
                         />
                       ) : (

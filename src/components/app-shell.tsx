@@ -6,7 +6,6 @@ import {
   LogOut,
   Pin,
   Store,
-  Bell,
   Plus,
   Link2,
   Link as LinkIcon,
@@ -24,6 +23,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AffiliateLinkDialog, openAffiliateLinkDialog } from "@/components/affiliate-link-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const NAV = [
   { to: "/dashboard", label: "Home", icon: Home },
@@ -37,9 +37,10 @@ export function AppShell({
   subtitle,
   actions,
   inlineActions,
-  showBack,
   backButton,
-  hideNotifications,
+  backTo,
+  backSearch,
+  onBack,
   greetingName,
   hideBottomNav,
   children,
@@ -48,9 +49,17 @@ export function AppShell({
   subtitle?: string;
   actions?: ReactNode;
   inlineActions?: boolean;
-  showBack?: boolean;
   backButton?: boolean;
-  hideNotifications?: boolean;
+  // Explicit parent route for the back button. When set, the back button
+  // navigates here instead of `history.back()` — so back is deterministic
+  // regardless of how the user reached the page (deep link, redirect, or a
+  // different entry point). `backSearch` supplies its search params.
+  backTo?: string;
+  backSearch?: Record<string, unknown>;
+  // Full override: when set, the back button calls this instead of navigating.
+  // Used by pages with in-memory sub-views (e.g. the board overview inside the
+  // review flow), where "back" should swap the view, not leave the page.
+  onBack?: () => void;
   greetingName?: boolean;
   hideBottomNav?: boolean;
   children: ReactNode;
@@ -61,7 +70,19 @@ export function AppShell({
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data: me } = useQuery({
+  // Back navigation: an explicit override wins, then the explicit parent
+  // route, then browser history.
+  const goBack = () => {
+    if (onBack) {
+      onBack();
+    } else if (backTo) {
+      navigate({ to: backTo, search: backSearch ?? {} } as never);
+    } else {
+      history.back();
+    }
+  };
+
+  const { data: me, isPending: meLoading } = useQuery({
     queryKey: ["me-shell"],
     queryFn: async () => {
       const { data: u } = await supabase.auth.getUser();
@@ -109,6 +130,7 @@ export function AppShell({
             connected={!!me?.pinterest_connected}
             initials={initials}
             avatar={me?.avatar_url ?? undefined}
+            loading={meLoading}
           />
 
           <nav className="mt-6 flex-1 space-y-1">
@@ -151,10 +173,10 @@ export function AppShell({
         <main className="min-w-0 flex-1 pb-24 md:pb-0">
           {/* Top app bar */}
           <header className="sticky top-0 z-30 border-b border-border/60 bg-background/85 backdrop-blur-xl">
-            <div className="safe-top flex items-center gap-3 px-4 pb-3 pt-3 sm:px-6 md:px-10 md:pt-4">
+            <div className="safe-top flex items-center gap-3 px-5 pb-3 pt-3 sm:px-6 md:px-10 md:pt-4">
               {backButton ? (
                 <button
-                  onClick={() => history.back()}
+                  onClick={goBack}
                   className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground"
                   aria-label="Back"
                 >
@@ -167,22 +189,20 @@ export function AppShell({
                   initials={initials}
                   avatar={me?.avatar_url ?? undefined}
                   onSignOut={signOut}
+                  loading={meLoading}
                 />
-              )}
-              {showBack && !backButton && (
-                <button
-                  onClick={() => history.back()}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground md:hidden"
-                  aria-label="Back"
-                >
-                  <ChevronLeft className="h-5 w-5" />
-                </button>
               )}
               <div className="min-w-0 flex-1">
                 {greetingName ? (
                   <>
                     <h1 className="truncate font-display text-[22px] font-bold leading-tight tracking-tight md:text-2xl">
-                      Hi, {firstName} 👋
+                      {meLoading ? (
+                        <>
+                          Hi, <Skeleton className="inline-block h-4 w-16 align-middle" /> 👋
+                        </>
+                      ) : (
+                        <>Hi, {firstName} 👋</>
+                      )}
                     </h1>
                   </>
                 ) : (
@@ -199,31 +219,27 @@ export function AppShell({
                 )}
               </div>
               {!hideHeaderActions && (
-                <div className="flex items-center gap-2">
-                  <div
-                    className={
-                      inlineActions
-                        ? "flex items-center gap-2"
-                        : "hidden sm:flex sm:items-center sm:gap-2"
-                    }
-                  >
-                    {actions}
-                  </div>
-                  {!hideNotifications && <NotificationsMenu />}
+                <div
+                  className={
+                    inlineActions
+                      ? "flex items-center gap-2"
+                      : "hidden sm:flex sm:items-center sm:gap-2"
+                  }
+                >
+                  {actions}
                 </div>
               )}
             </div>
 
             {/* Actions row on mobile */}
             {actions && !inlineActions && (
-              <div className="no-scrollbar flex items-center gap-2 overflow-x-auto border-t border-border/60 px-4 py-2 sm:hidden">
+              <div className="no-scrollbar flex items-center gap-2 overflow-x-auto border-t border-border/60 px-5 py-2.5 sm:hidden">
                 {actions}
               </div>
             )}
-
           </header>
 
-          <div className="px-4 py-5 sm:px-6 sm:py-8 md:px-10">{children}</div>
+          <div className="px-5 py-6 sm:px-6 sm:py-8 md:px-10">{children}</div>
         </main>
       </div>
 
@@ -233,11 +249,23 @@ export function AppShell({
           <div className="safe-bottom relative mx-auto border-t border-border/60 bg-background/95 px-2 pt-2 backdrop-blur-xl">
             <div className="mx-auto grid max-w-md grid-cols-5 items-end">
               {NAV.slice(0, 2).map((n) => (
-                <BottomTab key={n.to} to={n.to} label={n.label} Icon={n.icon} active={pathname === n.to} />
+                <BottomTab
+                  key={n.to}
+                  to={n.to}
+                  label={n.label}
+                  Icon={n.icon}
+                  active={pathname === n.to}
+                />
               ))}
               <SpeedDial pathname={pathname} />
               {NAV.slice(2).map((n) => (
-                <BottomTab key={n.to} to={n.to} label={n.label} Icon={n.icon} active={pathname === n.to} />
+                <BottomTab
+                  key={n.to}
+                  to={n.to}
+                  label={n.label}
+                  Icon={n.icon}
+                  active={pathname === n.to}
+                />
               ))}
             </div>
           </div>
@@ -394,11 +422,7 @@ function BottomTab({
   active: boolean;
 }) {
   return (
-    <Link
-      to={to}
-      className="flex flex-col items-center gap-0.5 py-1.5"
-      aria-label={label}
-    >
+    <Link to={to} className="flex flex-col items-center gap-0.5 py-1.5" aria-label={label}>
       <Icon
         className={`h-6 w-6 transition ${active ? "text-primary" : "text-muted-foreground"}`}
         strokeWidth={active ? 2.4 : 1.8}
@@ -430,7 +454,9 @@ function useLocalPinAccounts(primary?: string | null) {
         setAccounts(parsed.accounts ?? []);
         setActiveId(parsed.activeId ?? "primary");
       }
-    } catch {}
+    } catch {
+      /* corrupt/missing localStorage value — fall back to defaults */
+    }
   }, []);
 
   function persist(next: PinAccount[], nextActive: string) {
@@ -465,12 +491,14 @@ function ProfileSwitcher({
   connected,
   initials,
   avatar,
+  loading,
 }: {
   name: string;
   handle?: string | null;
   connected: boolean;
   initials: string;
   avatar?: string;
+  loading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -498,14 +526,18 @@ function ProfileSwitcher({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 rounded-2xl border border-sidebar-border bg-surface p-3 text-left transition hover:bg-surface-2"
       >
-        <Avatar initials={initials} src={avatar} />
+        <Avatar initials={initials} src={avatar} loading={loading} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{name}</div>
-          <div className="truncate text-xs text-muted-foreground">
-            @{active.handle}
-          </div>
+          {loading ? (
+            <Skeleton className="h-4 w-16" />
+          ) : (
+            <div className="truncate text-sm font-semibold">{name}</div>
+          )}
+          <div className="truncate text-xs text-muted-foreground">@{active.handle}</div>
         </div>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground transition ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
       {open && (
@@ -561,12 +593,14 @@ function UserMenu({
   initials,
   avatar,
   onSignOut,
+  loading,
 }: {
   name: string;
   email?: string;
   initials: string;
   avatar?: string;
   onSignOut: () => void;
+  loading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -587,30 +621,45 @@ function UserMenu({
         className="grid h-10 w-10 place-items-center rounded-full ring-2 ring-border transition hover:ring-primary/40"
         aria-label="Account menu"
       >
-        <Avatar initials={initials} src={avatar} size={36} />
+        <Avatar initials={initials} src={avatar} size={36} loading={loading} />
       </button>
       {open && (
         <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-64 overflow-hidden rounded-2xl border border-border bg-surface p-2 shadow-elevate">
-
           <div className="flex items-center gap-3 rounded-xl bg-surface-2 p-3">
-            <Avatar initials={initials} src={avatar} />
+            <Avatar initials={initials} src={avatar} loading={loading} />
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">{name}</div>
+              {loading ? (
+                <Skeleton className="h-4 w-16" />
+              ) : (
+                <div className="truncate text-sm font-semibold">{name}</div>
+              )}
               {email && <div className="truncate text-xs text-muted-foreground">{email}</div>}
             </div>
           </div>
-          <MenuItem icon={UserIcon} label="Profile" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/profile" });
-          }} />
-          <MenuItem icon={Users} label="Switch profile" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/switch-profile" });
-          }} />
-          <MenuItem icon={Settings} label="Settings" onClick={() => {
-            setOpen(false);
-            navigate({ to: "/settings" });
-          }} />
+          <MenuItem
+            icon={UserIcon}
+            label="Profile"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/profile" });
+            }}
+          />
+          <MenuItem
+            icon={Users}
+            label="Switch profile"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/switch-profile" });
+            }}
+          />
+          <MenuItem
+            icon={Settings}
+            label="Settings"
+            onClick={() => {
+              setOpen(false);
+              navigate({ to: "/settings" });
+            }}
+          />
           <div className="my-1 h-px bg-border/70" />
           <MenuItem icon={LogOut} label="Sign out" danger onClick={onSignOut} />
         </div>
@@ -643,7 +692,20 @@ function MenuItem({
   );
 }
 
-function Avatar({ initials, src, size = 40 }: { initials: string; src?: string; size?: number }) {
+function Avatar({
+  initials,
+  src,
+  size = 40,
+  loading,
+}: {
+  initials: string;
+  src?: string;
+  size?: number;
+  loading?: boolean;
+}) {
+  if (loading) {
+    return <Skeleton style={{ width: size, height: size }} className="rounded-full" />;
+  }
   if (src) {
     return (
       <img
@@ -660,152 +722,6 @@ function Avatar({ initials, src, size = 40 }: { initials: string; src?: string; 
       className="grid place-items-center rounded-full bg-gradient-primary text-primary-foreground"
     >
       <span className="font-display text-sm font-bold">{initials}</span>
-    </div>
-  );
-}
-
-/* ---------- Notifications ---------- */
-
-type NotificationItem = {
-  id: string;
-  title: string;
-  body?: string;
-  createdAt: string; // ISO
-  href?: string;
-};
-
-function timeAgo(iso: string) {
-  const d = new Date(iso).getTime();
-  const s = Math.max(1, Math.floor((Date.now() - d) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const days = Math.floor(h / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-function NotificationsMenu() {
-  const [open, setOpen] = useState(false);
-  const [lastSeen, setLastSeen] = useState<number>(() => {
-    if (typeof window === "undefined") return 0;
-    return Number(localStorage.getItem("pinearn.notifLastSeen") ?? 0);
-  });
-  const ref = useRef<HTMLDivElement | null>(null);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-
-  const { data: items = [] } = useQuery<NotificationItem[]>({
-    queryKey: ["notifications"],
-    queryFn: async () => {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user) return [];
-      const { data: pins } = await supabase
-        .from("pins")
-        .select("id,title,created_at")
-        .eq("user_id", u.user.id)
-        .order("created_at", { ascending: false })
-        .limit(10);
-      return (pins ?? []).map((p: any) => ({
-        id: `pin-${p.id}`,
-        title: "New pin created",
-        body: p.title ?? "Untitled pin",
-        createdAt: p.created_at,
-        href: "/pins",
-      }));
-    },
-    refetchOnWindowFocus: false,
-  });
-
-  const unread = items.filter((n) => new Date(n.createdAt).getTime() > lastSeen).length;
-
-  function handleOpen() {
-    setOpen((v) => {
-      const next = !v;
-      if (next) {
-        const now = Date.now();
-        localStorage.setItem("pinearn.notifLastSeen", String(now));
-        setLastSeen(now);
-      }
-      return next;
-    });
-  }
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={handleOpen}
-        className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-2 text-foreground"
-        aria-label="Notifications"
-        aria-expanded={open}
-      >
-        <Bell className="h-[18px] w-[18px]" />
-        {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground ring-2 ring-background">
-            {unread > 9 ? "9+" : unread}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-elevate">
-          <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-            <div className="text-sm font-semibold">Notifications</div>
-            <span className="text-[11px] text-muted-foreground">{items.length} recent</span>
-          </div>
-          <div className="max-h-96 overflow-y-auto">
-            {items.length === 0 ? (
-              <div className="px-4 py-10 text-center">
-                <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-surface-2">
-                  <Bell className="h-5 w-5 text-muted-foreground" />
-                </div>
-                <div className="mt-3 text-sm font-medium">You're all caught up</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  New activity will show up here.
-                </div>
-              </div>
-            ) : (
-              items.map((n) => {
-                const isUnread = new Date(n.createdAt).getTime() > lastSeen;
-                return (
-                  <button
-                    key={n.id}
-                    onClick={() => {
-                      setOpen(false);
-                      if (n.href) navigate({ to: n.href });
-                    }}
-                    className="flex w-full items-start gap-3 border-b border-border/40 px-4 py-3 text-left transition last:border-b-0 hover:bg-surface-2"
-                  >
-                    <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
-                      <Pin className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <div className="truncate text-sm font-medium">{n.title}</div>
-                        {isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />}
-                      </div>
-                      {n.body && (
-                        <div className="truncate text-xs text-muted-foreground">{n.body}</div>
-                      )}
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        {timeAgo(n.createdAt)}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

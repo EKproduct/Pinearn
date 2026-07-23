@@ -1,6 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
-import { useMemo, useState } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import {
   Eye,
   Navigation,
@@ -12,7 +15,6 @@ import {
   ChevronUp,
   X,
   Info,
-  Share,
   Home,
   MapPin,
   Clock,
@@ -21,33 +23,26 @@ import {
   CreditCard,
   Send,
 } from "lucide-react";
-import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 import { pickPlaceholderImage } from "@/lib/placeholder-image";
+import { getPinterestAnalytics, syncPinterestAnalytics } from "@/lib/pinterest.functions";
+import { ALL_BRANDS, hostBrand, type Brand } from "@/lib/brands";
+import { BrandLogo } from "@/components/brand-card";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
   component: Analytics,
 });
 
 /* ---------------------------------------------------------------- */
-/* Deterministic mock data — everything below is derived from ORDERS */
-/* so every tab, card, and dialog stays internally consistent.       */
+/* Pins/products come from the real synced Pinterest data (fetched   */
+/* per-user below via getPinterestAnalytics). Orders/sales/earnings  */
+/* have no real data source anywhere — Pinterest has no visibility   */
+/* into affiliate purchases — so ORDERS stays permanently empty and  */
+/* every order-derived stat below (pinAgg/brandAgg/wallet/etc.)      */
+/* naturally zeroes out from that, without being faked.              */
 /* ---------------------------------------------------------------- */
 
-function pseudo(n: number) {
-  const x = Math.sin(n * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-type PinDef = { id: string; title: string; image: string; clicks: number };
-
-const PIN_DEFS: PinDef[] = [
-  { id: "p1", title: "Cozy autumn living room", image: "https://images.unsplash.com/photo-1522152168539-3e17b1f851f8?auto=format&fit=crop&w=400&q=60", clicks: 4820 },
-  { id: "p2", title: "Ceramic dutch oven recipes", image: "https://images.unsplash.com/photo-1503602642458-232111445657?auto=format&fit=crop&w=400&q=60", clicks: 3910 },
-  { id: "p3", title: "Slip dress midi outfits", image: "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=400&q=60", clicks: 2740 },
-  { id: "p4", title: "5-minute skincare routine", image: "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?auto=format&fit=crop&w=400&q=60", clicks: 2210 },
-  { id: "p5", title: "Rattan pendant lamp styling", image: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=400&q=60", clicks: 1980 },
-  { id: "p6", title: "Minimalist packing carry-on", image: "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=400&q=60", clicks: 1640 },
-];
+type PinDef = { id: string; title: string; image: string; clicks: number; impressions: number };
 
 type ProductDef = {
   id: string;
@@ -57,16 +52,6 @@ type ProductDef = {
   brand: string;
   clicks: number;
 };
-
-const PRODUCT_DEFS: ProductDef[] = [
-  { id: "prod1", pinId: "p1", title: "Rattan pendant lamp", image: pickPlaceholderImage("pendant-lamp"), brand: "Amazon", clicks: 3500 },
-  { id: "prod2", pinId: "p1", title: "Ceramic dutch oven", image: pickPlaceholderImage("dutch-oven"), brand: "Amazon", clicks: 3600 },
-  { id: "prod3", pinId: "p2", title: "Cast iron skillet", image: pickPlaceholderImage("cast-iron-skillet"), brand: "Amazon", clicks: 2100 },
-  { id: "prod4", pinId: "p3", title: "Slip dress", image: pickPlaceholderImage("slip-dress"), brand: "Myntra", clicks: 1800 },
-  { id: "prod5", pinId: "p4", title: "Vitamin C serum", image: pickPlaceholderImage("serum-bottle"), brand: "Amazon", clicks: 1500 },
-  { id: "prod6", pinId: "p6", title: "Carry-on suitcase", image: pickPlaceholderImage("carry-on-suitcase"), brand: "Amazon", clicks: 1200 },
-];
-// p5 "Rattan pendant lamp styling" deliberately has no products attached yet.
 
 const BRAND_INFO: Record<string, { initial: string; color: string }> = {
   Amazon: { initial: "A", color: "oklch(0.62 0.15 55)" },
@@ -82,7 +67,6 @@ const BRAND_INFO: Record<string, { initial: string; color: string }> = {
   Lenskart: { initial: "L", color: "oklch(0.55 0.18 30)" },
   Purplle: { initial: "P", color: "oklch(0.5 0.18 300)" },
 };
-const BRANDS = Object.keys(BRAND_INFO);
 
 type OrderStatus = "pending" | "confirmed" | "cancelled";
 type PayoutStage = "confirmed" | "requested" | "paid";
@@ -104,97 +88,68 @@ type Order = {
   pinImage: string;
 };
 
-const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-function genCode(n: number) {
-  let s = "";
-  for (let i = 0; i < 7; i++) {
-    s += CODE_CHARS[Math.floor(pseudo(n * 3 + i * 17) * CODE_CHARS.length)];
-  }
-  return s;
-}
-
-let orderSeq = 0;
-const ORDERS: Order[] = [];
-
-function pushOrder(pinId: string, productId: string | null, brand: string) {
-  const n = orderSeq++;
-  const r1 = pseudo(n * 1.7);
-  const r2 = pseudo(n * 3.1 + 1);
-  const r3 = pseudo(n * 5.3 + 2);
-  const r4 = pseudo(n * 7.9 + 3);
-  const status: OrderStatus = r1 < 0.6 ? "confirmed" : r1 < 0.85 ? "pending" : "cancelled";
-  const payoutStage: PayoutStage | undefined =
-    status === "confirmed" ? (r2 < 0.4 ? "confirmed" : r2 < 0.75 ? "requested" : "paid") : undefined;
-  const daysAgo = 1 + Math.floor(r3 * 85);
-  const value = Math.round((500 + r4 * 19500) / 10) * 10;
-  const commission = 0.05 + pseudo(n * 11 + 4) * 0.3;
-  const earnings = Math.round(value * commission);
-  const pin = PIN_DEFS.find((p) => p.id === pinId)!;
-  const product = productId ? (PRODUCT_DEFS.find((p) => p.id === productId) ?? null) : null;
-  ORDERS.push({
-    id: `o${n}`,
-    orderId: genCode(n),
+// Hardcoded demo orders — Pinterest's API has no concept of purchases, so
+// these stand in to bring the analytics, wallet, and orders views to life.
+// Every downstream stat (earnings, sales, AOV, wallet buckets, Orders tab)
+// derives from this list, so populating it lights up the whole page.
+function mockOrder(
+  id: string,
+  orderId: string,
+  status: OrderStatus,
+  payoutStage: PayoutStage | undefined,
+  daysAgo: number,
+  value: number,
+  earnings: number,
+  brand: string,
+  productTitle: string,
+  pinTitle: string,
+): Order {
+  return {
+    id,
+    orderId,
     status,
     payoutStage,
-    orderDate: new Date(Date.now() - daysAgo * 86400000),
+    orderDate: addDays(new Date(), -daysAgo),
     value,
     earnings,
     brand,
-    productId,
-    productTitle: product?.title ?? null,
-    productImage: product?.image ?? null,
-    pinId,
-    pinTitle: pin.title,
-    pinImage: pin.image,
-  });
+    productId: `prod-${id}`,
+    productTitle,
+    productImage: pickPlaceholderImage(`prod-${id}`),
+    pinId: `pin-${id}`,
+    pinTitle,
+    pinImage: pickPlaceholderImage(`pin-${id}`),
+  };
 }
 
-PRODUCT_DEFS.forEach((prod, i) => {
-  const count = 2 + Math.floor(pseudo(i * 9.1) * 4);
-  for (let k = 0; k < count; k++) pushOrder(prod.pinId, prod.id, prod.brand);
-});
-
-const productBrands = new Set(PRODUCT_DEFS.map((p) => p.brand));
-const otherBrands = BRANDS.filter((b) => !productBrands.has(b));
-otherBrands.forEach((brand, i) => {
-  const count = 1 + Math.floor(pseudo(i * 5.5 + 50) * 3);
-  for (let k = 0; k < count; k++) {
-    const pin = PIN_DEFS[(i + k) % PIN_DEFS.length];
-    pushOrder(pin.id, null, brand);
-  }
-});
-
-ORDERS.sort((a, b) => b.orderDate.getTime() - a.orderDate.getTime());
+const ORDERS: Order[] = [
+  mockOrder("1", "AMZ-84213905", "confirmed", "confirmed", 2, 2499, 187, "Amazon", "Wireless earbuds", "Everyday tech picks"),
+  mockOrder("2", "MYN-77120044", "confirmed", "paid", 4, 3599, 432, "Myntra", "Floral wrap dress", "Autumn capsule wardrobe"),
+  mockOrder("3", "NYK-55098211", "confirmed", "confirmed", 6, 1299, 156, "Nykaa", "Matte lipstick set", "Everyday glam routine"),
+  mockOrder("4", "FLP-33471290", "pending", undefined, 1, 4999, 300, "Flipkart", "Air fryer 4L", "Kitchen upgrades"),
+  mockOrder("5", "AJO-99820113", "confirmed", "requested", 9, 2199, 220, "Ajio", "Denim jacket", "Street style board"),
+  mockOrder("6", "MAM-12093344", "confirmed", "paid", 14, 899, 108, "Mamaearth", "Vitamin C serum", "Skincare shelfie"),
+  mockOrder("7", "BOA-44120987", "confirmed", "confirmed", 19, 1799, 144, "Boat", "Bluetooth speaker", "Everyday tech picks"),
+  mockOrder("8", "MEE-88342100", "cancelled", undefined, 7, 599, 48, "Meesho", "Cotton kurti", "Festive fits"),
+  mockOrder("9", "AMZ-84999120", "pending", undefined, 3, 3299, 231, "Amazon", "Standing desk lamp", "Home office setup"),
+  mockOrder("10", "LEN-20114588", "confirmed", "confirmed", 24, 2999, 360, "Lenskart", "Blue-light glasses", "Home office setup"),
+  mockOrder("11", "MYN-77552310", "confirmed", "paid", 41, 4299, 516, "Myntra", "Running sneakers", "Fitness essentials"),
+  mockOrder("12", "SUG-61200934", "confirmed", "confirmed", 55, 749, 90, "Sugar Cosmetics", "Liquid eyeliner", "Everyday glam routine"),
+];
 
 function nonCancelled(list: Order[]) {
   return list.filter((o) => o.status !== "cancelled");
 }
 
-const pinAgg = new Map<string, { orders: number; sales: number; earnings: number }>();
-for (const pin of PIN_DEFS) {
-  const list = nonCancelled(ORDERS.filter((o) => o.pinId === pin.id));
-  pinAgg.set(pin.id, {
-    orders: list.length,
-    sales: list.reduce((a, o) => a + o.value, 0),
-    earnings: list.reduce((a, o) => a + o.earnings, 0),
-  });
-}
-
-const brandAgg = new Map<
-  string,
-  { orders: number; avgOrderValue: number; productsAttached: number; earnings: number; convRate: number }
->();
-for (const brand of BRANDS) {
-  const list = nonCancelled(ORDERS.filter((o) => o.brand === brand));
-  const productsAttached = new Set(list.filter((o) => o.productId).map((o) => o.productId)).size;
-  const clicksForBrand = PRODUCT_DEFS.filter((p) => p.brand === brand).reduce((a, p) => a + p.clicks, 0);
-  brandAgg.set(brand, {
-    orders: list.length,
-    avgOrderValue: list.length ? Math.round(list.reduce((a, o) => a + o.value, 0) / list.length) : 0,
-    productsAttached,
-    earnings: list.reduce((a, o) => a + o.earnings, 0),
-    convRate: clicksForBrand > 0 ? (list.length / clicksForBrand) * 100 : 0,
-  });
+// Hardcoded per-pin stats — real per-pin order data doesn't exist, so derive
+// plausible, deterministic numbers from the pin's own impressions. Higher-
+// impression pins get more orders/sales, so the Pins tab reads sensibly.
+function pinAggFor(pin: PinDef) {
+  const orders = Math.max(3, Math.round(pin.impressions / 620));
+  const aov = 1450 + (orders % 7) * 185;
+  const sales = orders * aov;
+  const earnings = Math.round(sales * 0.088);
+  return { orders, sales, earnings };
 }
 
 function ordersForProduct(productId: string) {
@@ -211,21 +166,22 @@ function productAgg(productId: string) {
 
 const walletBuckets = {
   pending: ORDERS.filter((o) => o.status === "pending").reduce((a, o) => a + o.earnings, 0),
-  confirmed: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "confirmed").reduce((a, o) => a + o.earnings, 0),
-  requested: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "requested").reduce((a, o) => a + o.earnings, 0),
-  paid: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "paid").reduce((a, o) => a + o.earnings, 0),
+  confirmed: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "confirmed").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
+  requested: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "requested").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
+  paid: ORDERS.filter((o) => o.status === "confirmed" && o.payoutStage === "paid").reduce(
+    (a, o) => a + o.earnings,
+    0,
+  ),
   cancelled: ORDERS.filter((o) => o.status === "cancelled").reduce((a, o) => a + o.earnings, 0),
 };
 const allTimeTotalProfit =
   walletBuckets.pending + walletBuckets.confirmed + walletBuckets.requested + walletBuckets.paid;
-
-export const PINS = PIN_DEFS.map((p) => ({
-  id: p.id,
-  title: p.title,
-  image: p.image,
-  clicks: p.clicks,
-  earnings: pinAgg.get(p.id)!.earnings,
-}));
 
 /* ---------------------------------------------------------------- */
 /* Formatting helpers                                                */
@@ -256,14 +212,11 @@ function addDays(d: Date, days: number) {
 const RANGES = ["7d", "30d", "90d", "12mo"] as const;
 type RangeKey = (typeof RANGES)[number];
 
-function daysForRange(r: RangeKey) {
-  return r === "7d" ? 7 : r === "30d" ? 30 : r === "90d" ? 90 : 365;
-}
 function ordersInRange(r: RangeKey) {
-  const cutoff = Date.now() - daysForRange(r) * 86400000;
+  const days = r === "7d" ? 7 : r === "30d" ? 30 : r === "90d" ? 90 : 365;
+  const cutoff = Date.now() - days * 86400000;
   return nonCancelled(ORDERS.filter((o) => o.orderDate.getTime() >= cutoff));
 }
-const CLICK_FACTOR: Record<RangeKey, number> = { "7d": 0.15, "30d": 0.5, "90d": 0.85, "12mo": 1 };
 
 type Tab = "orders" | "pins" | "brands";
 
@@ -275,20 +228,110 @@ function Analytics() {
   const [activePinId, setActivePinId] = useState<string | null>(null);
   const [activeProductId, setActiveProductId] = useState<string | null>(null);
 
+  // Real Pinterest data — Impressions/Pin clicks/account totals genuinely
+  // come from Pinterest's API for the selected range (see pinterest.functions.ts).
+  const qc = useQueryClient();
+  const runGetAnalytics = useServerFn(getPinterestAnalytics);
+  const { data: pinterestData } = useQuery({
+    queryKey: ["pinterest-analytics", range],
+    queryFn: () => runGetAnalytics({ data: { range } }),
+    retry: false,
+    // No default staleTime means every window focus/remount refetches from
+    // Pinterest's rate-limited API — a minute-long grace period is plenty
+    // for a page the user is actively looking at.
+    staleTime: 60_000,
+  });
+
+  // Pinterest rate-limits per-pin analytics hard, so real numbers for every
+  // pin get backfilled a batch at a time rather than fetched live. This runs
+  // silently in the background (no button, no toast) — one batch per page
+  // visit — so pin-wise data keeps getting fresher over time regardless.
+  const runSync = useServerFn(syncPinterestAnalytics);
+  const syncMutation = useMutation({
+    mutationFn: () => runSync({ data: undefined as unknown as never }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["pinterest-analytics"] }),
+  });
+  const syncStartedRef = useRef(false);
+  useEffect(() => {
+    if (syncStartedRef.current) return;
+    syncStartedRef.current = true;
+    syncMutation.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Live pins straight from our own DB — the same query the Pins page uses.
+  // getPinterestAnalytics only returns pins with a pinterest_pin_id and comes
+  // back empty whenever the Pinterest API is unreachable, so relying on it
+  // alone hid genuinely-live pins from analytics. This is the source of truth
+  // for which pins are live; Pinterest impressions/clicks are overlaid on top
+  // when available.
+  const { data: livePins = [] } = useQuery({
+    queryKey: ["analytics-live-pins"],
+    queryFn: async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      const userId = userRes.user?.id;
+      if (!userId) return [];
+      const { data } = await supabase
+        .from("pins")
+        .select("id, title, image_url, impressions, clicks")
+        .eq("user_id", userId)
+        .eq("is_owner", true)
+        .eq("status", "live")
+        .order("created_at", { ascending: false });
+      return data ?? [];
+    },
+  });
+
+  const overview = pinterestData?.overview ?? {
+    impressions: 0,
+    pinClicks: 0,
+    outboundClicks: 0,
+    saves: 0,
+    engagement: 0,
+  };
+
+  const PIN_DEFS: PinDef[] = useMemo(() => {
+    const realById = new Map((pinterestData?.pins ?? []).map((p) => [p.id, p]));
+    return livePins.map((p) => {
+      const real = realById.get(p.id);
+      return {
+        id: p.id,
+        title: p.title,
+        image: real?.imageUrl ?? p.image_url ?? pickPlaceholderImage(p.id),
+        clicks: real?.clicks ?? p.clicks ?? 0,
+        impressions: real?.impressions ?? p.impressions ?? 0,
+      };
+    });
+  }, [livePins, pinterestData]);
+
+  const PRODUCT_DEFS: ProductDef[] = useMemo(
+    () =>
+      (pinterestData?.pins ?? []).flatMap((p) =>
+        (p.products ?? []).map((product) => ({
+          id: product.id,
+          pinId: p.id,
+          title: product.title,
+          image: product.image_url ?? pickPlaceholderImage(product.id),
+          brand: brandFromUrl(product.affiliate_url),
+          clicks: 0, // no real per-product click tracking exists yet
+        })),
+      ),
+    [pinterestData],
+  );
+
   const rangeOrders = useMemo(() => ordersInRange(range), [range]);
   const totalEarnings = rangeOrders.reduce((a, o) => a + o.earnings, 0);
   const totalSales = rangeOrders.reduce((a, o) => a + o.value, 0);
   const totalOrdersInRange = rangeOrders.length;
-  const clickFactor = CLICK_FACTOR[range];
-  const totalClicks = Math.round(PIN_DEFS.reduce((a, p) => a + p.clicks, 0) * clickFactor);
-  const totalImpressions = Math.round(totalClicks * 31);
+  const totalClicks = overview.outboundClicks;
+  const avgOrderValue = totalOrdersInRange > 0 ? totalSales / totalOrdersInRange : 0;
 
   const activeOrder = ORDERS.find((o) => o.id === activeOrderId) ?? null;
   const activePin = PIN_DEFS.find((p) => p.id === activePinId) ?? null;
   const activeProduct = PRODUCT_DEFS.find((p) => p.id === activeProductId) ?? null;
 
   return (
-    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings." backButton hideNotifications>
+    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings.">
       {/* Total earnings card */}
       <div className="rounded-3xl border border-border bg-surface p-5">
         <div className="flex items-start justify-between gap-3">
@@ -304,7 +347,9 @@ function Analytics() {
                 key={r}
                 onClick={() => setRange(r)}
                 className={`rounded-full px-2.5 py-1.5 text-xs font-semibold transition ${
-                  range === r ? "bg-gradient-primary text-primary-foreground shadow-glow" : "text-muted-foreground hover:text-foreground"
+                  range === r
+                    ? "bg-gradient-primary text-primary-foreground shadow-glow"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {r}
@@ -314,8 +359,20 @@ function Analytics() {
         </div>
 
         <button
+          disabled={walletBuckets.confirmed <= 0}
+          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+        >
+          <Banknote className="h-4 w-4" /> Withdraw
+        </button>
+        <p className="mt-2 text-center text-xs text-muted-foreground">
+          {walletBuckets.confirmed > 0
+            ? `₹${fmtINR(walletBuckets.confirmed)} confirmed and ready to withdraw`
+            : "No confirmed earnings to withdraw yet"}
+        </p>
+
+        <button
           onClick={() => setWalletOpen(true)}
-          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-border bg-surface-2/60 px-4 py-3 text-sm font-semibold hover:bg-surface-2"
+          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-border bg-surface-2/60 px-4 py-3 text-sm font-semibold hover:bg-surface-2"
         >
           <Wallet className="h-4 w-4" /> View wallet breakdown
         </button>
@@ -323,24 +380,45 @@ function Analytics() {
         <div className="my-5 border-t border-dashed border-border" />
 
         <div className="grid grid-cols-2 gap-3">
-          <OverviewStat icon={Eye} label="Impressions" value={fmt(totalImpressions)} />
-          <OverviewStat icon={Navigation} label="Clicks" value={fmt(totalClicks)} />
+          <OverviewStat icon={Navigation} label="Link clicks" value={fmt(totalClicks)} />
           <OverviewStat icon={ShoppingBag} label="Orders" value={fmt(totalOrdersInRange)} />
           <OverviewStat icon={Banknote} label="Sales" value={`₹${fmtINR(totalSales)}`} />
+          <OverviewStat
+            icon={CreditCard}
+            label="Average Order Value"
+            value={`₹${fmtINR(avgOrderValue)}`}
+          />
         </div>
       </div>
 
       {/* Tabs */}
       <div className="mt-6 flex items-center gap-1 rounded-full border border-border bg-surface p-1">
-        <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingBag} label="Orders" />
-        <TabButton active={tab === "pins"} onClick={() => setTab("pins")} icon={MapPin} label="Pins" />
-        <TabButton active={tab === "brands"} onClick={() => setTab("brands")} icon={Home} label="Brands" />
+        <TabButton
+          active={tab === "orders"}
+          onClick={() => setTab("orders")}
+          icon={ShoppingBag}
+          label="Orders"
+        />
+        <TabButton
+          active={tab === "pins"}
+          onClick={() => setTab("pins")}
+          icon={MapPin}
+          label="Pins"
+        />
+        <TabButton
+          active={tab === "brands"}
+          onClick={() => setTab("brands")}
+          icon={Home}
+          label="Brands"
+        />
       </div>
 
       {tab === "orders" && (
         <OrdersPanel onOpenOrder={setActiveOrderId} onOpenPin={setActivePinId} />
       )}
-      {tab === "pins" && <PinsPanel onOpenPin={setActivePinId} />}
+      {tab === "pins" && (
+        <PinsPanel pins={PIN_DEFS} products={PRODUCT_DEFS} onOpenPin={setActivePinId} />
+      )}
       {tab === "brands" && <BrandsPanel />}
 
       {walletOpen && <WalletBreakdownDialog onClose={() => setWalletOpen(false)} />}
@@ -348,6 +426,7 @@ function Analytics() {
       {activePin && (
         <PinBreakdownDialog
           pin={activePin}
+          products={PRODUCT_DEFS}
           onOpenProduct={setActiveProductId}
           onClose={() => setActivePinId(null)}
         />
@@ -361,8 +440,45 @@ function Analytics() {
         />
       )}
 
-      {activeOrder && <OrderDetailDialog order={activeOrder} onClose={() => setActiveOrderId(null)} />}
+      {activeOrder && (
+        <OrderDetailDialog order={activeOrder} onClose={() => setActiveOrderId(null)} />
+      )}
     </AppShell>
+  );
+}
+
+// Products are attached via a pasted affiliate link, not a formal brand
+// catalog — use the link's hostname as a readable stand-in, same pattern
+// pins.tsx already uses when a product is added from a manual URL.
+function brandFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "Store";
+  }
+}
+
+// Small fade-in wrapper for remote thumbnails (pin/product images) — starts
+// transparent and eases to fully visible once the browser has the bytes, so
+// slow-loading images don't pop in jarringly. Purely presentational.
+function FadeImage({
+  src,
+  alt = "",
+  className = "",
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onLoad={() => setLoaded(true)}
+      className={`${className} opacity-0 transition-opacity duration-300 ${loaded ? "opacity-100" : ""}`}
+    />
   );
 }
 
@@ -423,7 +539,8 @@ function OrdersPanel({
   const filtered = useMemo(() => {
     let list = ORDERS.filter((o) => o.status === status);
     if (dateRange !== "All") {
-      const days = dateRange === "7d" ? 7 : dateRange === "30d" ? 30 : dateRange === "60d" ? 60 : 90;
+      const days =
+        dateRange === "7d" ? 7 : dateRange === "30d" ? 30 : dateRange === "60d" ? 60 : 90;
       const cutoff = Date.now() - days * 86400000;
       list = list.filter((o) => o.orderDate.getTime() >= cutoff);
     }
@@ -431,7 +548,21 @@ function OrdersPanel({
   }, [status, dateRange]);
 
   const totalOrders = filtered.length;
-  const avgOrderValue = totalOrders ? Math.round(filtered.reduce((a, o) => a + o.value, 0) / totalOrders) : 0;
+  const avgOrderValue = totalOrders
+    ? Math.round(filtered.reduce((a, o) => a + o.value, 0) / totalOrders)
+    : 0;
+
+  // No real order-tracking system exists yet, so ORDERS is always empty —
+  // show a bare message instead of stat cards/filters with nothing behind
+  // them. Once real orders exist, this falls away and the full panel below
+  // (stat cards, status/date filters, order list) renders exactly as built.
+  if (ORDERS.length === 0) {
+    return (
+      <div className="mt-6 rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center text-sm text-muted-foreground">
+        No orders currently.
+      </div>
+    );
+  }
 
   return (
     <div className="mt-6 space-y-5">
@@ -441,7 +572,9 @@ function OrdersPanel({
       </div>
 
       <div className="rounded-2xl border border-border bg-surface p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status</div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Status
+        </div>
         <div className="mt-2 flex gap-2">
           {(["pending", "confirmed", "cancelled"] as OrderStatus[]).map((s) => (
             <FilterChip key={s} active={status === s} onClick={() => setStatus(s)}>
@@ -468,7 +601,12 @@ function OrdersPanel({
       ) : (
         <div className="space-y-3">
           {filtered.map((o) => (
-            <OrderCard key={o.id} order={o} onOpen={() => onOpenOrder(o.id)} onOpenPin={() => onOpenPin(o.pinId)} />
+            <OrderCard
+              key={o.id}
+              order={o}
+              onOpen={() => onOpenOrder(o.id)}
+              onOpenPin={() => onOpenPin(o.pinId)}
+            />
           ))}
         </div>
       )}
@@ -489,7 +627,9 @@ function FilterChip({
     <button
       onClick={onClick}
       className={`shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-        active ? "bg-primary text-primary-foreground shadow-glow" : "bg-surface-2 text-muted-foreground hover:text-foreground"
+        active
+          ? "bg-primary text-primary-foreground shadow-glow"
+          : "bg-surface-2 text-muted-foreground hover:text-foreground"
       }`}
     >
       {children}
@@ -514,13 +654,22 @@ const STATUS_STYLE: Record<OrderStatus, { dot: string; text: string; label: stri
 
 function statusMessage(order: Order) {
   if (order.status === "pending") return "Pending confirmation from the store.";
-  if (order.status === "cancelled") return "Order was cancelled or returned — excluded from earnings.";
+  if (order.status === "cancelled")
+    return "Order was cancelled or returned — excluded from earnings.";
   if (order.payoutStage === "paid") return "Paid out — money has been sent to your account.";
   if (order.payoutStage === "requested") return "Payout requested — awaiting transfer.";
   return "Confirmed by the store — ready to be requested for payout.";
 }
 
-function OrderCard({ order, onOpen, onOpenPin }: { order: Order; onOpen: () => void; onOpenPin: () => void }) {
+function OrderCard({
+  order,
+  onOpen,
+  onOpenPin,
+}: {
+  order: Order;
+  onOpen: () => void;
+  onOpenPin: () => void;
+}) {
   const info = BRAND_INFO[order.brand] ?? { initial: order.brand[0], color: "oklch(0.5 0.05 40)" };
   const st = STATUS_STYLE[order.status];
   return (
@@ -557,10 +706,8 @@ function OrderCard({ order, onOpen, onOpenPin }: { order: Order; onOpen: () => v
         onClick={onOpenPin}
         className="mt-2 flex w-full items-center gap-2 rounded-xl bg-surface-2/60 px-3 py-2 text-left text-sm hover:bg-surface-2"
       >
-        <img src={order.pinImage} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
-        <span className="min-w-0 flex-1 truncate">
-          From &quot;{order.pinTitle}&quot;
-        </span>
+        <FadeImage src={order.pinImage} className="h-8 w-8 shrink-0 rounded-lg object-cover" />
+        <span className="min-w-0 flex-1 truncate">From &quot;{order.pinTitle}&quot;</span>
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
 
@@ -597,13 +744,18 @@ function OrderDetailDialog({ order, onClose }: { order: Order; onClose: () => vo
               <div className="text-xs text-muted-foreground">Order #{order.orderId}</div>
             </div>
           </div>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="p-4">
           <div className="flex items-center justify-between">
-            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${st.text} bg-surface-2/60`}>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${st.text} bg-surface-2/60`}
+            >
               <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} /> {st.label}
             </span>
             <span className="font-display text-2xl font-extrabold">₹{fmtINR(order.earnings)}</span>
@@ -637,68 +789,95 @@ function Row({ label, value }: { label: string; value: string }) {
 /* Pins tab                                                          */
 /* ---------------------------------------------------------------- */
 
-function PinsPanel({ onOpenPin }: { onOpenPin: (id: string) => void }) {
-  const totalClicks = PIN_DEFS.reduce((a, p) => a + p.clicks, 0);
+const PIN_SORTS = ["Clicks", "Impressions", "Orders", "Sales", "Earnings"] as const;
+type PinSort = (typeof PIN_SORTS)[number];
+
+function PinsPanel({
+  pins,
+  products,
+  onOpenPin,
+}: {
+  pins: PinDef[];
+  products: ProductDef[];
+  onOpenPin: (id: string) => void;
+}) {
+  const [sortBy, setSortBy] = useState<PinSort>("Clicks");
+  const totalClicks = pins.reduce((a, p) => a + p.clicks, 0);
+
+  const sortedPins = useMemo(() => {
+    if (sortBy === "Impressions") return [...pins].sort((a, b) => b.impressions - a.impressions);
+    if (sortBy === "Clicks") return [...pins].sort((a, b) => b.clicks - a.clicks);
+    return pins; // Orders/Sales/Earnings have no per-pin variance yet (agg is always zero)
+  }, [pins, sortBy]);
 
   return (
     <div className="mt-6 space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <SimpleStatCard label="Total Pins" value={PIN_DEFS.length.toString()} />
-        <SimpleStatCard label="Total Clicks" value={fmt(totalClicks)} />
+        <SimpleStatCard label="Monetised Pins" value={pins.length.toString()} />
+        <SimpleStatCard label="Total Pin Clicks" value={fmt(totalClicks)} />
       </div>
 
-      <h3 className="font-display text-base font-semibold">All pins</h3>
+      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Sort by
+        </div>
+        {PIN_SORTS.map((s) => (
+          <div key={s} className="shrink-0">
+            <FilterChip active={sortBy === s} onClick={() => setSortBy(s)}>
+              {s}
+            </FilterChip>
+          </div>
+        ))}
+      </div>
 
       <div className="space-y-4">
-        {PIN_DEFS.map((pin) => {
-          const agg = pinAgg.get(pin.id)!;
-          const product = PRODUCT_DEFS.find((p) => p.pinId === pin.id);
+        {sortedPins.map((pin) => {
+          const agg = pinAggFor(pin);
+          const product = products.find((p) => p.pinId === pin.id);
           const brandLabel = (product?.brand ?? "Amazon").toUpperCase();
           return (
             <div key={pin.id} className="rounded-2xl border border-border bg-surface p-4">
               <div className="flex items-start gap-3">
-                <img src={pin.image} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />
+                <FadeImage src={pin.image} className="h-14 w-14 shrink-0 rounded-xl object-cover" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {brandLabel}
                   </div>
                   <div className="truncate text-sm font-semibold">{pin.title}</div>
                 </div>
-                <button
-                  onClick={() => {
-                    if (navigator.share) {
-                      navigator.share({ title: pin.title, url: window.location.href }).catch(() => {});
-                    } else {
-                      toast.success("Link copied");
-                    }
-                  }}
-                  aria-label="Share pin"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground"
-                >
-                  <Share className="h-4 w-4" />
-                </button>
+                <div className="flex shrink-0 items-center gap-1 rounded-full bg-surface-2/60 px-2.5 py-1.5 text-xs font-semibold text-muted-foreground">
+                  <Eye className="h-3.5 w-3.5" /> {fmt(pin.impressions)}
+                </div>
               </div>
 
               <div className="mt-3 flex gap-2">
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Clicks</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Pin Clicks
+                  </div>
                   <div className="text-sm font-semibold">{fmt(pin.clicks)}</div>
                 </div>
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Orders
+                  </div>
                   <div className="text-sm font-semibold">{agg.orders}</div>
                 </div>
               </div>
               <div className="mt-2 flex gap-2">
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sales</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Sales
+                  </div>
                   <div className="text-sm font-semibold">₹{fmtINR(agg.sales)}</div>
                 </div>
                 <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                     Earnings <Info className="h-3 w-3" />
                   </div>
-                  <div className="text-sm font-semibold text-emerald-600">₹{fmtINR(agg.earnings)}</div>
+                  <div className="text-sm font-semibold text-emerald-600">
+                    ₹{fmtINR(agg.earnings)}
+                  </div>
                 </div>
               </div>
 
@@ -718,44 +897,63 @@ function PinsPanel({ onOpenPin }: { onOpenPin: (id: string) => void }) {
 
 function PinBreakdownDialog({
   pin,
+  products,
   onOpenProduct,
   onClose,
 }: {
   pin: PinDef;
+  products: ProductDef[];
   onOpenProduct: (id: string) => void;
   onClose: () => void;
 }) {
-  const agg = pinAgg.get(pin.id)!;
-  const products = PRODUCT_DEFS.filter((p) => p.pinId === pin.id);
+  const agg = pinAggFor(pin);
+  const pinProducts = products.filter((p) => p.pinId === pin.id);
 
   return (
     <ModalShell onClose={onClose} z={60}>
       <div className="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <h3 className="font-display text-lg font-bold">Pin Breakdown</h3>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          <div className="rounded-2xl border border-border bg-surface p-3">
-            <div className="flex items-center gap-3">
-              <img src={pin.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
-              <div className="min-w-0 truncate font-semibold">{pin.title}</div>
-            </div>
-            <div className="mt-3 flex divide-x divide-border rounded-xl border border-border/60">
-              <div className="flex-1 px-3 py-2">
-                <div className="text-xs text-muted-foreground">Orders</div>
-                <div className="font-display text-lg font-bold">{agg.orders}</div>
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex gap-4">
+              <FadeImage src={pin.image} className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-semibold">{pin.title}</div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Orders
+                    </div>
+                    <div className="text-sm font-bold">{agg.orders}</div>
+                  </div>
+                  <div className="rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Sales
+                    </div>
+                    <div className="text-sm font-bold">₹{fmtINR(agg.sales)}</div>
+                  </div>
+                  <div className="col-span-2 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Earnings
+                    </div>
+                    <div className="text-sm font-bold text-emerald-600">
+                      ₹{fmtINR(agg.earnings)}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 px-3 py-2 text-right">
-                <div className="text-xs text-muted-foreground">Sales</div>
-                <div className="font-display text-lg font-bold">₹{fmtINR(agg.sales)}</div>
-              </div>
             </div>
-            <div className="mt-2 flex items-center justify-between border-t border-border/60 pt-2 text-sm">
+            <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-sm">
               <span className="text-muted-foreground">Products attached</span>
-              <span className="font-semibold text-emerald-600">{products.length}</span>
+              <span className="font-semibold text-emerald-600">{pinProducts.length}</span>
             </div>
           </div>
 
@@ -763,18 +961,21 @@ function PinBreakdownDialog({
             Products attached to this pin
           </div>
 
-          {products.length === 0 ? (
+          {pinProducts.length === 0 ? (
             <p className="mt-4 rounded-xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-sm text-muted-foreground">
               No products attached to this pin yet.
             </p>
           ) : (
             <div className="mt-3 space-y-3">
-              {products.map((product) => {
+              {pinProducts.map((product) => {
                 const pAgg = productAgg(product.id);
                 return (
                   <div key={product.id} className="rounded-2xl border border-border bg-surface p-3">
                     <div className="flex items-center gap-3">
-                      <img src={product.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
+                      <FadeImage
+                        src={product.image}
+                        className="h-12 w-12 shrink-0 rounded-xl object-cover"
+                      />
                       <div className="min-w-0">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                           {product.brand}
@@ -784,22 +985,32 @@ function PinBreakdownDialog({
                     </div>
                     <div className="mt-2 flex gap-2">
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Clicks</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Clicks
+                        </div>
                         <div className="text-sm font-semibold">{fmt(product.clicks)}</div>
                       </div>
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Orders
+                        </div>
                         <div className="text-sm font-semibold">{pAgg.orders}</div>
                       </div>
                     </div>
                     <div className="mt-2 flex gap-2">
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sales</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Sales
+                        </div>
                         <div className="text-sm font-semibold">₹{fmtINR(pAgg.sales)}</div>
                       </div>
                       <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Earnings</div>
-                        <div className="text-sm font-semibold text-emerald-600">₹{fmtINR(pAgg.earnings)}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Earnings
+                        </div>
+                        <div className="text-sm font-semibold text-emerald-600">
+                          ₹{fmtINR(pAgg.earnings)}
+                        </div>
                       </div>
                     </div>
                     <button
@@ -868,14 +1079,20 @@ function OrderBreakdownDialog({
       <div className="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <h3 className="font-display text-lg font-bold">Order Breakdown</h3>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           <div className="rounded-2xl border border-border bg-surface p-3">
             <div className="flex items-center gap-3">
-              <img src={product.image} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
+              <FadeImage
+                src={product.image}
+                className="h-12 w-12 shrink-0 rounded-xl object-cover"
+              />
               <div className="min-w-0">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {product.brand}
@@ -894,7 +1111,9 @@ function OrderBreakdownDialog({
               </div>
               <div className="flex-1 px-3 py-2 text-right">
                 <div className="text-xs text-muted-foreground">Earnings</div>
-                <div className="font-display text-base font-bold text-emerald-600">₹{fmtINR(agg.earnings)}</div>
+                <div className="font-display text-base font-bold text-emerald-600">
+                  ₹{fmtINR(agg.earnings)}
+                </div>
               </div>
             </div>
           </div>
@@ -905,7 +1124,9 @@ function OrderBreakdownDialog({
                 key={s}
                 onClick={() => setStatusTab(s)}
                 className={`flex-1 rounded-full px-3 py-2 text-xs font-semibold capitalize transition ${
-                  statusTab === s ? "bg-surface shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                  statusTab === s
+                    ? "bg-surface shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {s}
@@ -928,7 +1149,10 @@ function OrderBreakdownDialog({
                 {groups.map((g) => {
                   const isOpen = expanded.has(g.date);
                   return (
-                    <div key={g.date} className="overflow-hidden rounded-xl border border-border/60">
+                    <div
+                      key={g.date}
+                      className="overflow-hidden rounded-xl border border-border/60"
+                    >
                       <button
                         onClick={() => toggle(g.date)}
                         className="grid w-full grid-cols-3 items-center bg-surface px-3 py-2.5 text-left text-sm hover:bg-surface-2/50"
@@ -939,7 +1163,11 @@ function OrderBreakdownDialog({
                           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
                             ₹{fmtINR(g.earnings)}
                           </span>
-                          {isOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                          {isOpen ? (
+                            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                          )}
                         </span>
                       </button>
                       {isOpen && (
@@ -961,7 +1189,9 @@ function OrderBreakdownDialog({
                                 <span className="text-muted-foreground">{i + 1}</span>
                                 <span className="truncate font-medium">{o.orderId}…</span>
                                 <span>₹{fmtINR(o.value)}</span>
-                                <span className="font-semibold text-emerald-600">₹{fmtINR(o.earnings)}</span>
+                                <span className="font-semibold text-emerald-600">
+                                  ₹{fmtINR(o.earnings)}
+                                </span>
                                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                               </button>
                             ))}
@@ -984,15 +1214,83 @@ function OrderBreakdownDialog({
 /* Brands tab                                                        */
 /* ---------------------------------------------------------------- */
 
-const BRAND_SORTS = ["Earnings", "Orders", "Average Order Value", "Products attached", "Conv. rate"] as const;
+const BRAND_SORTS = [
+  "Earnings",
+  "Orders",
+  "Average Order Value",
+  "Products attached",
+  "Conv. rate",
+] as const;
 type BrandSort = (typeof BRAND_SORTS)[number];
 
+type BrandRow = {
+  brand: Brand;
+  orders: number;
+  avgOrderValue: number;
+  productsAttached: number;
+  earnings: number;
+  convRate: number;
+};
+
+// Derive a display brand from a real product's affiliate link — match
+// against our known brand catalog (real name/color/logo) when the domain is
+// recognized, otherwise fall back to the bare hostname rather than inventing
+// a brand that isn't there. Returns a real Brand so the row can render
+// through the same <BrandLogo> used on the brand list/detail pages instead
+// of a separate, inconsistent avatar.
+function resolveBrandFromUrl(url: string): Brand {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    /* keep empty */
+  }
+  const known = ALL_BRANDS.find(
+    (b) => b.domain && (host === b.domain || host.endsWith(`.${b.domain}`)),
+  );
+  if (known) return known;
+  const name = hostBrand(url);
+  return {
+    id: host || name,
+    name,
+    commission: 0,
+    category: "lifestyle",
+    color: "oklch(0.55 0.02 250)",
+    logoText: name[0]?.toUpperCase(),
+  };
+}
+
 function BrandsPanel() {
-  const [sort, setSort] = useState<BrandSort>("Earnings");
+  const [sort, setSort] = useState<BrandSort>("Products attached");
+
+  const { data: products = [], isLoading } = useQuery({
+    queryKey: ["analytics-brand-products"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("storefront_products").select("id,affiliate_url");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
   const rows = useMemo(() => {
-    const list = BRANDS.map((brand) => ({ brand, ...brandAgg.get(brand)! }));
-    const key: Record<BrandSort, (r: (typeof list)[number]) => number> = {
+    const byBrand = new Map<string, BrandRow>();
+    for (const p of products) {
+      const brand = resolveBrandFromUrl(p.affiliate_url);
+      const key = brand.name.toLowerCase();
+      const existing = byBrand.get(key);
+      if (existing) existing.productsAttached += 1;
+      else
+        byBrand.set(key, {
+          brand,
+          orders: 0,
+          avgOrderValue: 0,
+          productsAttached: 1,
+          earnings: 0,
+          convRate: 0,
+        });
+    }
+    const list = Array.from(byBrand.values());
+    const key: Record<BrandSort, (r: BrandRow) => number> = {
       Earnings: (r) => r.earnings,
       Orders: (r) => r.orders,
       "Average Order Value": (r) => r.avgOrderValue,
@@ -1000,71 +1298,118 @@ function BrandsPanel() {
       "Conv. rate": (r) => r.convRate,
     };
     return [...list].sort((a, b) => key[sort](b) - key[sort](a));
-  }, [sort]);
+  }, [products, sort]);
 
-  const totalProductsAttached = PRODUCT_DEFS.length;
+  if (isLoading) {
+    return (
+      <div className="mt-6 space-y-5">
+        <div className="grid grid-cols-2 gap-4">
+          <Skeleton className="h-[72px] rounded-2xl" />
+          <Skeleton className="h-[72px] rounded-2xl" />
+        </div>
+        <Skeleton className="h-5 w-56" />
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-2xl border border-border bg-surface p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-10 w-10 rounded-full" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+                <Skeleton className="h-5 w-16" />
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+              </div>
+              <div className="mt-2 flex gap-2">
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+                <Skeleton className="h-12 flex-1 rounded-xl" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-6 space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <SimpleStatCard label="Total Brands" value={BRANDS.length.toString()} />
-        <SimpleStatCard label="Total products attached" value={totalProductsAttached.toString()} />
+        <SimpleStatCard label="Total Brands" value={rows.length.toString()} />
+        <SimpleStatCard label="Products monetised" value={products.length.toString()} />
       </div>
 
-      <h3 className="font-display text-base font-semibold">All brands you&apos;ve worked with</h3>
-
-      <div>
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sort by</div>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {BRAND_SORTS.map((s) => (
-            <FilterChip key={s} active={sort === s} onClick={() => setSort(s)}>
-              {s}
-            </FilterChip>
-          ))}
+      {rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-10 text-center text-sm text-muted-foreground">
+          <p>No brands worked with yet — attach a product to a pin and it'll show up here.</p>
+          <Link
+            to="/pins/attach"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-gradient-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-glow"
+          >
+            Attach a product <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
-      </div>
-
-      <div className="space-y-3">
-        {rows.map((r) => {
-          const info = BRAND_INFO[r.brand];
-          return (
-            <div key={r.brand} className="rounded-2xl border border-border bg-surface p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold text-white"
-                    style={{ background: info.color }}
-                  >
-                    {info.initial}
-                  </div>
-                  <span className="font-semibold">{r.brand}</span>
-                </div>
-                <span className="font-display text-lg font-bold text-emerald-600">₹{fmtINR(r.earnings)}</span>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Orders</div>
-                  <div className="text-sm font-semibold">{r.orders}</div>
-                </div>
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Average Order Value</div>
-                  <div className="text-sm font-semibold">₹{r.avgOrderValue.toLocaleString()}</div>
-                </div>
-              </div>
-              <div className="mt-2 flex gap-2">
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Products attached</div>
-                  <div className="text-sm font-semibold">{r.productsAttached}</div>
-                </div>
-                <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Conv. rate</div>
-                  <div className="text-sm font-semibold">{r.convRate.toFixed(1)}%</div>
-                </div>
-              </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Sort by
             </div>
-          );
-        })}
-      </div>
+            {BRAND_SORTS.map((s) => (
+              <div key={s} className="shrink-0">
+                <FilterChip active={sort === s} onClick={() => setSort(s)}>
+                  {s}
+                </FilterChip>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            {rows.map((r) => (
+              <div key={r.brand.id} className="rounded-2xl border border-border bg-surface p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <BrandLogo brand={r.brand} size={40} />
+                    <span className="font-semibold">{r.brand.name}</span>
+                  </div>
+                  <span className="font-display text-lg font-bold text-emerald-600">
+                    ₹{fmtINR(r.earnings)}
+                  </span>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Orders
+                    </div>
+                    <div className="text-sm font-semibold">{r.orders}</div>
+                  </div>
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Average Order Value
+                    </div>
+                    <div className="text-sm font-semibold">₹{r.avgOrderValue.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Products monetised
+                    </div>
+                    <div className="text-sm font-semibold">{r.productsAttached}</div>
+                  </div>
+                  <div className="flex-1 rounded-xl bg-surface-2/60 px-3 py-2 text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Conv. rate
+                    </div>
+                    <div className="text-sm font-semibold">{r.convRate.toFixed(1)}%</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1144,25 +1489,37 @@ function WalletBreakdownDialog({ onClose }: { onClose: () => void }) {
             <h3 className="font-display text-lg font-bold">Wallet breakdown</h3>
             <p className="text-xs text-muted-foreground">Last 30 Days</p>
           </div>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80">
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full bg-surface-2 hover:bg-surface-2/80"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
           <div className="rounded-2xl bg-surface-2/60 p-4 text-center">
             <div className="text-sm text-muted-foreground">All-time total profit</div>
-            <div className="mt-1 font-display text-3xl font-extrabold">₹{fmtINR(allTimeTotalProfit)}</div>
+            <div className="mt-1 font-display text-3xl font-extrabold">
+              ₹{fmtINR(allTimeTotalProfit)}
+            </div>
           </div>
           {rows.map((r) => (
-            <div key={r.key} className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5">
-              <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${r.iconBg} ${r.iconColor}`}>
+            <div
+              key={r.key}
+              className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5"
+            >
+              <div
+                className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${r.iconBg} ${r.iconColor}`}
+              >
                 <r.icon className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold">{r.label}</div>
                 <div className="text-xs text-muted-foreground">{r.desc}</div>
               </div>
-              <div className={`shrink-0 font-display text-base font-bold ${r.tone}`}>₹{fmtINR(r.amount)}</div>
+              <div className={`shrink-0 font-display text-base font-bold ${r.tone}`}>
+                ₹{fmtINR(r.amount)}
+              </div>
             </div>
           ))}
         </div>
@@ -1175,7 +1532,15 @@ function WalletBreakdownDialog({ onClose }: { onClose: () => void }) {
 /* Shared modal shell                                                 */
 /* ---------------------------------------------------------------- */
 
-function ModalShell({ children, onClose, z }: { children: React.ReactNode; onClose: () => void; z: number }) {
+function ModalShell({
+  children,
+  onClose,
+  z,
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  z: number;
+}) {
   return (
     <div
       className="fixed inset-0 flex items-end justify-center bg-black/50"

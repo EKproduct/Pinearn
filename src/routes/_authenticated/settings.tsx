@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
+import { startPinterestOAuth, disconnectPinterest } from "@/lib/pinterest-oauth.functions";
 import {
   Bell,
   Moon,
@@ -42,6 +44,8 @@ function loadPrefs(): Prefs {
 function SettingsPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const runStartOAuth = useServerFn(startPinterestOAuth);
+  const runDisconnect = useServerFn(disconnectPinterest);
   const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [connected, setConnected] = useState(false);
@@ -66,6 +70,10 @@ function SettingsPage() {
         setPinterestUsername(p.pinterest_username ?? "");
       }
     })();
+    if (new URLSearchParams(window.location.search).get("connected") === "1") {
+      toast.success("Pinterest connected");
+      window.history.replaceState(null, "", window.location.pathname);
+    }
   }, []);
 
   function update(patch: Partial<Prefs>) {
@@ -81,14 +89,22 @@ function SettingsPage() {
   async function togglePinterest() {
     if (!userId) return;
     setBusy(true);
-    const { error } = await supabase
-      .from("profiles")
-      .update({ pinterest_connected: !connected })
-      .eq("id", userId);
-    setBusy(false);
-    if (error) return toast.error(error.message);
-    setConnected(!connected);
-    toast.success(!connected ? "Pinterest connected" : "Pinterest disconnected");
+    try {
+      if (connected) {
+        await runDisconnect();
+        setConnected(false);
+        setPinterestUsername("");
+        toast.success("Pinterest disconnected");
+      } else {
+        const { url } = await runStartOAuth({ data: { returnTo: "/settings" } });
+        window.location.href = url;
+        return; // navigating away
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function signOut() {
@@ -105,21 +121,24 @@ function SettingsPage() {
     );
     if (!ok) return;
     setBusy(true);
-    await supabase.from("profiles").update({
-      display_name: null,
-      avatar_url: null,
-      pinterest_connected: false,
-      pinterest_username: null,
-      onboarding_completed: false,
-    }).eq("id", userId);
+    await supabase
+      .from("profiles")
+      .update({
+        display_name: null,
+        avatar_url: null,
+        pinterest_connected: false,
+        pinterest_username: null,
+        onboarding_completed: false,
+      })
+      .eq("id", userId);
     setBusy(false);
     toast.success("Account data cleared");
     await signOut();
   }
 
   return (
-    <AppShell title="Settings">
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6 md:px-0">
+    <AppShell title="Settings" backButton backTo="/dashboard">
+      <div className="mx-auto max-w-2xl space-y-4">
         <Section title="Account">
           <Row label={email || "Signed in"} sub="Signed in with phone OTP">
             <ShieldCheck className="h-4 w-4 text-accent" />
@@ -128,8 +147,16 @@ function SettingsPage() {
 
         <Section title="Pinterest">
           <Row
-            label={connected ? `Connected${pinterestUsername ? ` · @${pinterestUsername}` : ""}` : "Not connected"}
-            sub={connected ? "Boards and pins sync automatically." : "Connect to sync your boards & pins."}
+            label={
+              connected
+                ? `Connected${pinterestUsername ? ` · @${pinterestUsername}` : ""}`
+                : "Not connected"
+            }
+            sub={
+              connected
+                ? "Boards and pins sync automatically."
+                : "Connect to sync your boards & pins."
+            }
           >
             <button
               onClick={togglePinterest}
@@ -140,7 +167,13 @@ function SettingsPage() {
                   : "bg-gradient-primary text-primary-foreground shadow-glow"
               }`}
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : connected ? <Link2Off className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : connected ? (
+                <Link2Off className="h-3.5 w-3.5" />
+              ) : (
+                <Link2 className="h-3.5 w-3.5" />
+              )}
               {connected ? "Disconnect" : "Connect"}
             </button>
           </Row>

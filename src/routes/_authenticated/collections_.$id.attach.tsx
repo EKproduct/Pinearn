@@ -2,27 +2,27 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
-import {
-  Loader2,
-  Check,
-  Sparkles,
-  Wand2,
-  Link2,
-  Plus,
-  Image as ImageIcon,
-  Store,
-  ArrowRight,
-} from "lucide-react";
+import { motion } from "framer-motion";
+import { useScrollMorph } from "@/hooks/use-scroll-morph";
+import { Loader2, Sparkles, Wand2, Link2, Plus, Store, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
+import {
+  SuggestionCard,
+  ProgressiveSuggestionCard,
+  realProductPrice,
+} from "@/components/suggestion-card";
+import { EducationalLoader, HINTS } from "@/components/rotating-hint";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { visualSearchImage } from "@/lib/pinterest.functions";
-import { pickPlaceholderImage } from "@/lib/placeholder-image";
+import { hostBrand } from "@/lib/brands";
+import { visualSearchImage, type CkResult, type RawVisualMatch } from "@/lib/pinterest.functions";
+import { getFriendlyMessage } from "@/lib/friendly-error";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/_authenticated/collections_/$id/attach")({
   component: AttachToCollectionPage,
   errorComponent: ({ error }) => (
-    <div className="p-6 text-sm text-destructive">{error.message}</div>
+    <div className="p-6 text-sm text-destructive">{getFriendlyMessage(error)}</div>
   ),
   notFoundComponent: () => (
     <div className="p-6 text-sm text-muted-foreground">Collection not found.</div>
@@ -42,6 +42,8 @@ type ProductRow = {
   image_url: string | null;
   affiliate_url: string;
   collection_id: string | null;
+  price_cents: number | null;
+  commission_pct: number | null;
 };
 
 function AttachToCollectionPage() {
@@ -49,6 +51,11 @@ function AttachToCollectionPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const runVisualSearch = useServerFn(visualSearchImage);
+  // Scroll-linked morph: the big cover preview shrinks into a small pinned
+  // thumbnail as the results scroll down, and grows back on scroll up. This
+  // page scrolls the window (no internal scroll container), so no ref is
+  // passed. heroMinHeight keeps it a thumbnail rather than vanishing.
+  const morph = useScrollMorph(undefined, { heroMinHeight: 76 });
 
   const { data: collection, isLoading } = useQuery({
     queryKey: ["collection", id],
@@ -68,7 +75,7 @@ function AttachToCollectionPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("storefront_products")
-        .select("id,title,image_url,affiliate_url,collection_id")
+        .select("id,title,image_url,affiliate_url,collection_id,price_cents,commission_pct")
         .eq("collection_id", id)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -84,18 +91,31 @@ function AttachToCollectionPage() {
     refetch: refetchAI,
   } = useQuery({
     queryKey: ["visual-search-collection", id, imageUrl],
-    queryFn: () =>
-      runVisualSearch({ data: { imageUrl, title: collection?.name ?? "" } }),
+    queryFn: () => runVisualSearch({ data: { imageUrl, title: collection?.name ?? "" } }),
     enabled: !!imageUrl,
-    staleTime: 5 * 60_000,
+    // Results are already fully validated (real matches, live price+stock) —
+    // never silently refetch this expensive pipeline in the background; a
+    // manual refetchAI() call is the only way it runs again.
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
-  const suggestions: Array<{ title: string; query: string; reason?: string }> =
-    aiData?.suggestions ?? [];
+  const suggestions = aiData?.suggestions ?? [];
 
-  const [attachedIdxs, setAttachedIdxs] = useState<Set<number>>(new Set());
-  const [pendingIdx, setPendingIdx] = useState<Set<number>>(new Set());
+  // Progressive rendering: `suggestions` paints immediately (image/title/
+  // source, no CK wait); each card resolves price/stock independently via
+  // ProgressiveSuggestionCard. `confirmedByLink` records each match's
+  // outcome the instant it settles, keyed by link (not index — matches
+  // resolve out of order). A confirmed-available suggestion is
+  // auto-attached the moment it settles, same as before, just per-match
+  // instead of a blind loop over unconfirmed raw matches.
+  const [confirmedByLink, setConfirmedByLink] = useState<Map<string, CkResult>>(new Map());
+  const [attachedLinks, setAttachedLinks] = useState<Set<string>>(new Set());
   const [manualUrl, setManualUrl] = useState("");
   const mountedRef = useRef(true);
+  // Guards against double-attaching the same suggestion — plain ref (not
+  // state) since it only needs to block a duplicate call, never render.
+  const attachingLinksRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -105,17 +125,15 @@ function AttachToCollectionPage() {
   }, []);
 
   useEffect(() => {
-    setAttachedIdxs(new Set());
+    setConfirmedByLink(new Map());
+    setAttachedLinks(new Set());
+    attachingLinksRef.current = new Set();
   }, [aiData]);
 
-  const aiLinkFor = (s: { query: string }) =>
-    `https://www.amazon.in/s?k=${encodeURIComponent(s.query)}`;
-
-  const attachSuggestion = async (idx: number) => {
-    if (pendingIdx.has(idx) || attachedIdxs.has(idx)) return;
-    const s = suggestions[idx];
-    if (!s || !collection) return;
-    setPendingIdx((prev) => new Set(prev).add(idx));
+  const attachSuggestion = async (s: RawVisualMatch) => {
+    if (attachingLinksRef.current.has(s.link) || attachedLinks.has(s.link)) return;
+    if (!collection) return;
+    attachingLinksRef.current.add(s.link);
     try {
       const { data: userRes } = await supabase.auth.getUser();
       const userId = userRes.user?.id;
@@ -125,37 +143,36 @@ function AttachToCollectionPage() {
         storefront_id: collection.storefront_id,
         collection_id: collection.id,
         title: s.title,
-        affiliate_url: aiLinkFor(s),
-        image_url: pickPlaceholderImage(s.query),
+        affiliate_url: s.link,
+        image_url: s.thumbnail ?? collection.cover_image_url,
       });
       if (error) throw error;
-      setAttachedIdxs((prev) => new Set(prev).add(idx));
+      if (!mountedRef.current) return;
+      setAttachedLinks((prev) => new Set(prev).add(s.link));
       qc.invalidateQueries({ queryKey: ["collection-products", id] });
     } catch (e) {
-      toast.error((e as Error).message);
+      toast.error(getFriendlyMessage(e));
     } finally {
-      setPendingIdx((prev) => {
-        const next = new Set(prev);
-        next.delete(idx);
-        return next;
-      });
+      attachingLinksRef.current.delete(s.link);
     }
   };
 
-  const attachSuggestionRef = useRef(attachSuggestion);
-  attachSuggestionRef.current = attachSuggestion;
-
-  useEffect(() => {
-    if (aiLoading || suggestions.length === 0) return;
-    if (attachedIdxs.size > 0 || pendingIdx.size > 0) return;
-
-    (async () => {
-      for (let idx = 0; idx < suggestions.length; idx++) {
-        if (!mountedRef.current) break;
-        await attachSuggestionRef.current(idx);
-      }
-    })();
-  }, [aiLoading, suggestions.length, attachedIdxs, pendingIdx]);
+  const handleSuggestionSettled = (link: string, details: CkResult) => {
+    setConfirmedByLink((prev) => {
+      if (prev.has(link)) return prev;
+      const next = new Map(prev);
+      next.set(link, details);
+      return next;
+    });
+    // Every match that resolved with a usable price (live CK figure or the
+    // Lens fallback, in stock or not) is auto-attached — there's no
+    // "unavailable" card to hold back anymore. Only a match with no price at
+    // all (`details === null`) is skipped, since there'd be nothing to show.
+    if (details) {
+      const s = suggestions.find((m) => m.link === link);
+      if (s) void attachSuggestion(s);
+    }
+  };
 
   const addManual = useMutation({
     mutationFn: async () => {
@@ -192,14 +209,43 @@ function AttachToCollectionPage() {
       setManualUrl("");
       toast.success("Product added to collection");
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(getFriendlyMessage(e)),
   });
 
   if (isLoading) {
     return (
-      <AppShell title="Attach products" backButton hideBottomNav>
-        <div className="grid place-items-center p-12">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <AppShell title="Attach products" backButton backTo="/storefront" hideBottomNav>
+        <div className="mx-auto max-w-2xl space-y-6 pb-32">
+          {/* Cover image placeholder */}
+          <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
+            <Skeleton className="aspect-[4/5] max-h-72 w-full rounded-none" />
+          </div>
+
+          {/* Manual link placeholder */}
+          <div>
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="mt-1.5 h-11 w-full rounded-xl" />
+            <Skeleton className="mt-2 h-9 w-full rounded-xl" />
+          </div>
+
+          {/* Recommendation grid placeholder */}
+          <div>
+            <Skeleton className="h-4 w-40" />
+            <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="overflow-hidden rounded-xl border border-border bg-surface-2/40"
+                >
+                  <Skeleton className="aspect-square w-full rounded-none" />
+                  <div className="space-y-1.5 p-2.5">
+                    <Skeleton className="h-2 w-1/3" />
+                    <Skeleton className="h-2.5 w-4/5" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </AppShell>
     );
@@ -207,7 +253,7 @@ function AttachToCollectionPage() {
 
   if (!collection) {
     return (
-      <AppShell title="Attach products" backButton hideBottomNav>
+      <AppShell title="Attach products" backButton backTo="/storefront" hideBottomNav>
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center text-sm text-muted-foreground">
           Collection not found.
         </div>
@@ -220,27 +266,28 @@ function AttachToCollectionPage() {
       title={collection.name}
       subtitle="Attach products to this collection"
       backButton
+      backTo="/storefront"
       hideBottomNav
-      hideNotifications
     >
       <div className="mx-auto max-w-2xl space-y-6 pb-32">
-        {/* Visual scan preview */}
+        {/* Visual scan preview — sticks to the top and shrinks into a compact
+            pinned thumbnail as the results scroll down, expanding back on
+            scroll up. */}
         {imageUrl ? (
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
-            <div className="relative mx-auto aspect-[4/5] max-h-72 w-full">
-              <img
-                src={imageUrl}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-              {aiLoading && (
+          <motion.div
+            style={{ height: morph.heroHeight }}
+            className="sticky top-16 z-20 overflow-hidden rounded-2xl border border-border bg-surface-2/40 shadow-sm"
+          >
+            <div className="relative mx-auto h-full w-full">
+              <img src={imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              {aiLoading && suggestions.length === 0 && (
                 <>
                   <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
                   <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
                 </>
               )}
               <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-                {aiLoading ? (
+                {aiLoading && suggestions.length === 0 ? (
                   <>
                     <Loader2 className="h-3 w-3 animate-spin" /> Visual search…
                   </>
@@ -251,7 +298,7 @@ function AttachToCollectionPage() {
                 )}
               </div>
             </div>
-          </div>
+          </motion.div>
         ) : (
           <div className="rounded-2xl border border-dashed border-border bg-surface-2/40 p-6 text-center text-xs text-muted-foreground">
             Add a cover photo to this collection to run visual search.
@@ -298,7 +345,7 @@ function AttachToCollectionPage() {
             <div className="flex items-center gap-2">
               {suggestions.length > 0 && (
                 <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                  {attachedIdxs.size} attached
+                  {attachedLinks.size} attached
                 </span>
               )}
               <button
@@ -310,67 +357,27 @@ function AttachToCollectionPage() {
               </button>
             </div>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            {aiLoading && suggestions.length === 0 ? (
-              Array.from({ length: 3 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="overflow-hidden rounded-xl border border-dashed border-border bg-surface-2/40"
-                >
-                  <div className="aspect-square w-full animate-pulse bg-surface-2/60" />
-                  <div className="space-y-1.5 p-2.5">
-                    <div className="h-2 w-1/3 animate-pulse rounded-full bg-muted" />
-                    <div className="h-2.5 w-4/5 animate-pulse rounded-full bg-muted" />
-                  </div>
-                </div>
-              ))
-            ) : suggestions.length === 0 ? (
-              <p className="col-span-full rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
-                No suggestions yet.
-              </p>
-            ) : (
-              suggestions.map((s, idx) => {
-                const isAttached = attachedIdxs.has(idx);
-                const isPending = pendingIdx.has(idx);
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => attachSuggestion(idx)}
-                    disabled={isPending || isAttached}
-                    className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface text-left transition hover:-translate-y-0.5 hover:shadow-elevate disabled:opacity-70 ${
-                      isAttached
-                        ? "border-primary ring-2 ring-primary"
-                        : "border-primary/30 hover:border-primary/60"
-                    }`}
-                  >
-                    <div className="relative aspect-square w-full overflow-hidden bg-primary/10">
-                      <img
-                        src={pickPlaceholderImage(s.query)}
-                        alt={s.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-                      />
-                    </div>
-                    {isPending ? (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary/80 text-primary-foreground shadow">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      </span>
-                    ) : isAttached ? (
-                      <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow">
-                        <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                      </span>
-                    ) : null}
-                    <div className="flex flex-1 flex-col gap-1.5 p-2.5">
-                      <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                        {s.title}
-                      </h3>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
+          {aiLoading && suggestions.length === 0 ? (
+            <div className="mt-3">
+              <EducationalLoader label="Finding matching products…" hints={HINTS.matching} />
+            </div>
+          ) : suggestions.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
+              No matching products found.
+            </p>
+          ) : (
+            <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              {suggestions.map((s) => (
+                <ProgressiveSuggestionCard
+                  key={s.link}
+                  match={s}
+                  selected={attachedLinks.has(s.link)}
+                  onToggle={() => void attachSuggestion(s)}
+                  onSettled={handleSuggestionSettled}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Already in this collection */}
@@ -385,30 +392,15 @@ function AttachToCollectionPage() {
             </h5>
             <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
               {products.map((p) => (
-                <div
+                <SuggestionCard
                   key={p.id}
-                  className="overflow-hidden rounded-xl border border-border bg-surface"
-                >
-                  <div className="relative aspect-square w-full overflow-hidden bg-primary/10">
-                    {p.image_url ? (
-                      <img
-                        src={p.image_url}
-                        alt={p.title}
-                        loading="lazy"
-                        className="absolute inset-0 h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="absolute inset-0 grid place-items-center text-muted-foreground">
-                        <ImageIcon className="h-8 w-8" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-2.5">
-                    <h3 className="line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">
-                      {p.title}
-                    </h3>
-                  </div>
-                </div>
+                  title={p.title}
+                  thumbnail={p.image_url}
+                  source={hostBrand(p.affiliate_url)}
+                  link={p.affiliate_url}
+                  price={realProductPrice(p.price_cents)}
+                  commissionPct={p.commission_pct}
+                />
               ))}
             </div>
           </div>
@@ -416,7 +408,10 @@ function AttachToCollectionPage() {
       </div>
 
       {/* Sticky Done */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-4 py-3 backdrop-blur-xl">
+      <div
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-5 py-3 backdrop-blur-xl"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
         <div className="mx-auto flex max-w-2xl items-center justify-end">
           <button
             onClick={() => navigate({ to: "/storefront" })}

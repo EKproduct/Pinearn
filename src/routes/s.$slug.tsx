@@ -7,7 +7,7 @@ const DEFAULT_BACKGROUND =
   "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1600&q=80&auto=format&fit=crop";
 
 export const getPublicStorefront = createServerFn({ method: "GET" })
-  .inputValidator((d: { slug: string }) => z.object({ slug: z.string() }).parse(d))
+  .validator((d: { slug: string }) => z.object({ slug: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { createClient } = await import("@supabase/supabase-js");
     const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_PUBLISHABLE_KEY!, {
@@ -29,8 +29,10 @@ export const getPublicStorefront = createServerFn({ method: "GET" })
           .order("position", { ascending: true }),
         sb
           .from("pins")
-          .select("id,title,image_url,collection_id")
+          .select("id,title,image_url,collection_id,product_id")
           .eq("storefront_id", store.id)
+          .eq("status", "live")
+          .eq("is_owner", true)
           .order("created_at", { ascending: false })
           .limit(200),
         sb
@@ -39,11 +41,7 @@ export const getPublicStorefront = createServerFn({ method: "GET" })
           .eq("storefront_id", store.id)
           .is("hidden_from_storefront_at", null)
           .order("position", { ascending: true }),
-        sb
-          .from("profiles")
-          .select("avatar_url,display_name")
-          .eq("id", store.user_id)
-          .maybeSingle(),
+        sb.from("profiles").select("avatar_url,display_name").eq("id", store.user_id).maybeSingle(),
       ]);
     const boardIds = (boards ?? []).map((b) => b.id);
     let boardCollections: { board_id: string; collection_id: string }[] = [];
@@ -92,13 +90,26 @@ export const Route = createFileRoute("/s/$slug")({
 });
 
 function PublicStorefront() {
-  const { store, collections, pins, boards, boardCollections, profile } = Route.useLoaderData();
-  type C = (typeof collections)[number];
+  const {
+    store,
+    collections: allCollections,
+    pins,
+    boards,
+    boardCollections,
+    profile,
+  } = Route.useLoaderData();
+  type C = (typeof allCollections)[number];
   type P = (typeof pins)[number];
   type B = (typeof boards)[number];
   const brand = store.brand_color ?? "#E60023";
   const backgroundUrl = store.background_image_url ?? DEFAULT_BACKGROUND;
   const [tab, setTab] = useState<"collections" | "boards">("collections");
+
+  // `pins` only contains live pins (see the loader) — a pin only goes live
+  // via the explicit Go Live action, so a collection (synced Pinterest
+  // board) only shows up publicly once it has at least one live pin.
+  const collectionIdsWithProduct = new Set(pins.map((p) => p.collection_id));
+  const collections = allCollections.filter((c) => collectionIdsWithProduct.has(c.id));
 
   const collectionsByBoard = new Map<string, string[]>();
   for (const bc of boardCollections) {
@@ -209,7 +220,7 @@ function PublicStorefront() {
                 <CoverCard
                   key={b.id}
                   name={b.name}
-                  subtitle={`${memberIds.length} collection${memberIds.length === 1 ? "" : "s"}`}
+                  subtitle={`${memberCollections.length} collection${memberCollections.length === 1 ? "" : "s"}`}
                   coverUrl={cover}
                   coverColor={null}
                   brand={brand}
@@ -223,7 +234,7 @@ function PublicStorefront() {
         )}
       </main>
 
-      <footer className="py-8 text-center text-xs text-muted-foreground">
+      <footer className="px-6 py-8 text-center text-xs text-muted-foreground">
         Powered by{" "}
         <Link to="/" className="text-primary hover:underline">
           Pinearn
