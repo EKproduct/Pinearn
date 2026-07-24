@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
-import { ArrowRight, BadgeCheck, Heart, Link2, TrendingUp } from "lucide-react";
+import { ArrowRight, BadgeCheck, TrendingUp } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -46,6 +46,12 @@ const IMG = {
   sneakerRed: img("photo-1542291026-7eec264c27ff"),
   handbag: img("photo-1584917865442-de89df76afd3"),
   plants: img("photo-1463320726281-696a485928c7"),
+  slipDress: img("photo-1490481651871-ab68de25d43d"),
+  skincare: img("photo-1556228720-195a672e8a03"),
+  suitcase: img("photo-1553062407-98eeb64c6a62"),
+  pendantLamp: img("photo-1524758631624-e2822e304c36"),
+  skillet: img("photo-1544025162-d76694265947"),
+  homeDecor: img("photo-1441984904996-e0b6ba687e04"),
 };
 
 function PinImg({ src, g }: { src: string; g: string }) {
@@ -172,25 +178,53 @@ const rise: Variants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] } },
 };
 
-type WelcomePin = { src: string; g: string; tag?: string; save?: boolean; d?: number };
+type WallPin = { src: string; g: string; a: string };
+type WallColumn = { dir: "up" | "down"; dur: number; pins: WallPin[] };
 
-const WELCOME_COLLAGE: WelcomePin[][] = [
-  [
-    { src: IMG.chair, g: "from-rose-400 to-pink-600", save: true },
-    { src: IMG.salad, g: "from-amber-400 to-orange-600", tag: "₹499", d: 1.2 },
-    { src: IMG.clothesRail, g: "from-sky-400 to-indigo-600" },
-  ],
-  [
-    { src: IMG.modelPink, g: "from-emerald-400 to-teal-600", tag: "₹1,299", d: 0.8 },
-    { src: IMG.livingRoom, g: "from-red-500 to-rose-700", save: true },
-    { src: IMG.watch, g: "from-fuchsia-500 to-purple-600", tag: "₹2,150", d: 1.7 },
-  ],
-  [
-    { src: IMG.shoppingBags, g: "from-indigo-400 to-violet-600" },
-    { src: IMG.makeup, g: "from-teal-400 to-cyan-600", save: true },
-    { src: IMG.sneakerRed, g: "from-orange-400 to-red-500", tag: "₹899", d: 2.2 },
-  ],
+// The pre-login wall — three columns of real pin imagery that drift endlessly
+// (outer columns up, middle down) for a living Pinterest-board feel. Aspect
+// ratios are mixed per tile so the columns read as an organic masonry, not a grid.
+const WALL: WallColumn[] = [
+  {
+    dir: "up",
+    dur: 42,
+    pins: [
+      { src: IMG.chair, g: "from-rose-400 to-pink-600", a: "3 / 4" },
+      { src: IMG.salad, g: "from-amber-400 to-orange-600", a: "1 / 1" },
+      { src: IMG.slipDress, g: "from-fuchsia-500 to-purple-600", a: "3 / 4" },
+      { src: IMG.suitcase, g: "from-sky-400 to-indigo-600", a: "4 / 5" },
+      { src: IMG.skillet, g: "from-orange-400 to-red-500", a: "1 / 1" },
+      { src: IMG.plants, g: "from-emerald-400 to-teal-600", a: "3 / 4" },
+    ],
+  },
+  {
+    dir: "down",
+    dur: 52,
+    pins: [
+      { src: IMG.modelPink, g: "from-emerald-400 to-teal-600", a: "4 / 5" },
+      { src: IMG.livingRoom, g: "from-red-500 to-rose-700", a: "1 / 1" },
+      { src: IMG.makeup, g: "from-teal-400 to-cyan-600", a: "3 / 4" },
+      { src: IMG.handbag, g: "from-fuchsia-500 to-purple-600", a: "3 / 4" },
+      { src: IMG.foodTable, g: "from-amber-400 to-orange-600", a: "4 / 5" },
+      { src: IMG.pendantLamp, g: "from-indigo-400 to-violet-600", a: "3 / 4" },
+    ],
+  },
+  {
+    dir: "up",
+    dur: 62,
+    pins: [
+      { src: IMG.clothesRail, g: "from-sky-400 to-indigo-600", a: "3 / 4" },
+      { src: IMG.watch, g: "from-fuchsia-500 to-purple-600", a: "1 / 1" },
+      { src: IMG.sneakerRed, g: "from-orange-400 to-red-500", a: "4 / 5" },
+      { src: IMG.skincare, g: "from-teal-400 to-cyan-600", a: "3 / 4" },
+      { src: IMG.shoppingBags, g: "from-indigo-400 to-violet-600", a: "3 / 4" },
+      { src: IMG.homeDecor, g: "from-rose-400 to-pink-600", a: "1 / 1" },
+    ],
+  },
 ];
+
+// Headline animates in word by word; "money" carries the brand gradient.
+const HEADLINE = ["Don't", "leave", "money", "on", "your", "boards."];
 
 function Welcome() {
   const reduce = useReducedMotion();
@@ -201,91 +235,103 @@ function Welcome() {
       transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
       className="relative mx-auto grid h-dvh w-full max-w-lg grid-rows-[minmax(0,1fr)_auto_auto] overflow-hidden"
     >
-      {/* ---- Collage band (fades into the canvas) ---- */}
-      <div className="relative min-h-0">
+      {/* ---- Living pin wall (fades into the canvas) ---- */}
+      <div className="relative min-h-0 overflow-hidden">
         <div
-          className="absolute inset-0 px-3 pt-3"
+          className="absolute inset-0 flex gap-2.5 px-2.5 pt-2.5"
           style={{
-            maskImage: "linear-gradient(180deg, black 62%, transparent 97%)",
-            WebkitMaskImage: "linear-gradient(180deg, black 62%, transparent 97%)",
+            maskImage: "linear-gradient(180deg, black 58%, transparent 93%)",
+            WebkitMaskImage: "linear-gradient(180deg, black 58%, transparent 93%)",
           }}
         >
-          <div className="grid h-full grid-cols-3 gap-2.5">
-            {WELCOME_COLLAGE.map((col, ci) => (
-              <motion.div
-                key={ci}
-                initial={reduce ? undefined : { opacity: 0, y: ci === 1 ? -24 : 24 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1], delay: 0.1 + ci * 0.12 }}
-                className={`flex min-h-0 flex-col gap-2.5 ${ci === 1 ? "-mt-1" : "mt-5"}`}
+          {WALL.map((col, ci) => (
+            <motion.div
+              key={ci}
+              initial={reduce ? undefined : { opacity: 0, y: 32 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1], delay: 0.1 + ci * 0.12 }}
+              className="min-h-0 flex-1"
+            >
+              {/* Endless track — tiles rendered twice; -50% lands on the copy. */}
+              <div
+                className={`flex flex-col will-change-transform ${ci === 1 ? "mt-8" : ""} ${
+                  reduce ? "" : col.dir === "up" ? "animate-wall-up" : "animate-wall-down"
+                }`}
+                style={reduce ? undefined : { animationDuration: `${col.dur}s` }}
               >
-                {col.map((p, pi) => (
-                  <div key={pi} className="relative flex-1 overflow-hidden rounded-2xl shadow-sm">
+                {[...col.pins, ...col.pins].map((p, pi) => (
+                  <div
+                    key={pi}
+                    className="relative mb-2.5 overflow-hidden rounded-2xl shadow-sm ring-1 ring-black/[0.04]"
+                    style={{ aspectRatio: p.a }}
+                  >
                     <PinImg src={p.src} g={p.g} />
-                    {p.save && (
-                      <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-1 text-[9px] font-bold text-primary-foreground">
-                        <Heart className="h-2.5 w-2.5" fill="currentColor" /> Save
-                      </span>
-                    )}
-                    {p.tag && (
-                      <motion.span
-                        initial={{ opacity: 0, scale: 0.5, y: 8 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        transition={{
-                          delay: reduce ? 0 : (p.d ?? 1),
-                          type: "spring",
-                          stiffness: 380,
-                          damping: 22,
-                        }}
-                        className="absolute bottom-2 left-2 right-2 inline-flex items-center justify-center gap-1 rounded-full bg-surface/95 px-1.5 py-1 text-[9px] font-bold text-foreground shadow-sm backdrop-blur"
-                      >
-                        <Link2 className="h-2.5 w-2.5 text-primary" /> {p.tag} · linked
-                      </motion.span>
-                    )}
                   </div>
                 ))}
-              </motion.div>
-            ))}
-          </div>
+              </div>
+            </motion.div>
+          ))}
         </div>
 
-        {/* Floating proof chips riding the collage */}
-        <div className="animate-float absolute right-3 top-[30%] z-10">
+        {/* Floating money proof — springs in, then drifts over the moving wall */}
+        <motion.div
+          initial={reduce ? undefined : { opacity: 0, scale: 0.8, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ delay: 0.65, type: "spring", stiffness: 320, damping: 20 }}
+          className="animate-float absolute right-3 top-[24%] z-10"
+        >
           <div className="glass flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-bold shadow-elevate">
             <TrendingUp className="h-3.5 w-3.5 text-success" /> +₹214 today
           </div>
-        </div>
-        <div className="animate-float-delay absolute left-3 top-[55%] z-10">
+        </motion.div>
+        <motion.div
+          initial={reduce ? undefined : { opacity: 0, scale: 0.8, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ delay: 0.85, type: "spring", stiffness: 320, damping: 20 }}
+          className="animate-float-delay absolute left-3 top-[48%] z-10"
+        >
           <div className="glass flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-bold shadow-elevate">
-            <BadgeCheck className="h-3.5 w-3.5 text-primary" /> 3 linked
+            <BadgeCheck className="h-3.5 w-3.5 text-primary" /> 3 pins linked
           </div>
-        </div>
+        </motion.div>
       </div>
 
       {/* ---- Claim ---- */}
-      <motion.div
-        variants={stagger}
-        initial="hidden"
-        animate="show"
-        className="relative z-10 -mt-2 px-6 text-center"
-      >
+      <div className="relative z-10 -mt-3 px-6 text-center">
         <motion.img
-          variants={rise}
+          initial={reduce ? undefined : { opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           src="/pinearn-logo.png"
           alt=""
           draggable={false}
           className="mx-auto h-14 w-14 rounded-2xl shadow-elevate"
         />
         <motion.h1
-          variants={rise}
-          className="mx-auto mt-3 max-w-[15ch] font-display text-[clamp(1.8rem,7.5vw,2.6rem)] font-semibold leading-[1.08] tracking-tight"
+          variants={stagger}
+          initial="hidden"
+          animate="show"
+          className="mx-auto mt-3 flex max-w-[16ch] flex-wrap justify-center gap-x-[0.28em] font-display text-[clamp(2rem,8.5vw,2.9rem)] font-semibold leading-[1.04] tracking-tight"
         >
-          Your pins already get clicks. <span className="text-gradient">Make them pay.</span>
+          {HEADLINE.map((w, i) => (
+            <motion.span
+              key={i}
+              variants={rise}
+              className={`inline-block ${i === 2 ? "text-gradient" : ""}`}
+            >
+              {w}
+            </motion.span>
+          ))}
         </motion.h1>
-        <motion.p variants={rise} className="mt-2 text-sm text-muted-foreground">
-          AI links the products in your pins. You earn.
+        <motion.p
+          initial={reduce ? undefined : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.55, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          className="mx-auto mt-2.5 max-w-[27ch] text-sm text-muted-foreground"
+        >
+          Start your Pinterest affiliate journey now.
         </motion.p>
-      </motion.div>
+      </div>
 
       {/* ---- CTAs pinned at the thumb ---- */}
       <motion.div
@@ -299,7 +345,7 @@ function Welcome() {
             to="/auth"
             className="group flex min-h-[54px] w-full items-center justify-center gap-2 rounded-full bg-primary text-[16px] font-bold text-primary-foreground shadow-glow transition active:scale-[0.98]"
           >
-            Start free
+            Start earning now
             <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" />
           </Link>
         </motion.div>
