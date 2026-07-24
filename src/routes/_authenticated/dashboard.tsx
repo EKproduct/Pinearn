@@ -215,6 +215,19 @@ function AffiliateLinkMaker() {
   );
 }
 
+// Fashion-forward pins (outfits, clothing, mirror selfies, style shots) are the
+// ones the seller most wants front-and-centre, so they headline the strip and
+// take the biggest hardcoded reach numbers. We can't analyse image pixels here,
+// so detection keys off common apparel/style words in the pin title.
+const FASHION_TITLE_RE =
+  /\b(fashion|outfit|ootd|style|styled|wear|wearing|womenswear|menswear|activewear|swimwear|loungewear|clothes|clothing|apparel|dress|dresses|gown|skirt|jeans|denim|jacket|coat|blazer|shirt|tee|tshirt|t-shirt|blouse|sweater|hoodie|knit|cardigan|pants|trousers|shorts|leggings|jumpsuit|romper|saree|sari|kurta|lehenga|heels|boots|sneakers|handbag|purse|wardrobe|lookbook|chic|glam|selfie|haul|co-?ord)\b/i;
+
+function isFashionPin(title: string | null | undefined) {
+  if (!title) return false;
+  const t = title.toLowerCase();
+  return FASHION_TITLE_RE.test(t) || t.includes("mirror selfie");
+}
+
 function MonetizePins() {
   const runGetAnalytics = useServerFn(getPinterestAnalytics);
 
@@ -261,7 +274,15 @@ function MonetizePins() {
             clicks: real?.clicks ?? p.clicks,
           };
         })
-        .sort((a, b) => b.impressions - a.impressions)
+        // Fashion pins (clothing / outfits / mirror selfies) sort first, then by
+        // real impressions within each group — so they land on top and pick up
+        // the biggest hardcoded reach numbers below.
+        .sort((a, b) => {
+          const fa = isFashionPin(a.title) ? 1 : 0;
+          const fb = isFashionPin(b.title) ? 1 : 0;
+          if (fa !== fb) return fb - fa;
+          return b.impressions - a.impressions;
+        })
         // Hardcoded impressions/clicks in strictly decreasing order — the first
         // card headlines the biggest number and each one steps down from there.
         .map((p, i) => {
@@ -424,7 +445,14 @@ function MonetizeBoards() {
     return (
       Array.from(byId.values())
         .filter((b) => b.unmonetized > 0)
-        .sort((a, b) => b.unmonetized - a.unmonetized)
+        // The "mirror" board is pinned to the first position; the rest fall in by
+        // how many pins are still left to monetise.
+        .sort((a, b) => {
+          const ma = /\bmirror\b/i.test(a.collection.name) ? 1 : 0;
+          const mb = /\bmirror\b/i.test(b.collection.name) ? 1 : 0;
+          if (ma !== mb) return mb - ma;
+          return b.unmonetized - a.unmonetized;
+        })
         // Hardcoded impressions in strictly decreasing order — mirrors the pins
         // strip above so the top board headlines the biggest reach and each card
         // steps down from there.

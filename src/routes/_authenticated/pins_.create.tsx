@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Upload,
   Loader2,
@@ -11,9 +11,17 @@ import {
   Store,
   Link2,
   Plus,
-  Wand2,
   X,
+  ClipboardPaste,
+  ArrowRight,
+  Grip,
+  Image as ImageIcon,
 } from "lucide-react";
+import { AnimatePresence, motion, Reorder } from "framer-motion";
+import { useScrollMorph } from "@/hooks/use-scroll-morph";
+import { PinScanOverlay, type ScanPhase } from "@/components/pin-scan-overlay";
+import { CollectionAddFlow, AddFromCollectionButton } from "@/components/collection-picker";
+import { suggestPinTitle, suggestPinDescription } from "@/lib/health-score";
 import { toast } from "sonner";
 import {
   SuggestionCard,
@@ -23,7 +31,7 @@ import {
 import { EducationalLoader, HINTS } from "@/components/rotating-hint";
 import { AppShell } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { hostBrand } from "@/lib/brands";
+import { hostBrand, estimateCommissionPct } from "@/lib/brands";
 import { getFriendlyMessage } from "@/lib/friendly-error";
 import {
   visualSearchImage,
@@ -31,7 +39,14 @@ import {
   type CkResult,
   type RawVisualMatch,
 } from "@/lib/pinterest.functions";
-import type { Collection, Product, Storefront } from "./pins";
+import {
+  CATEGORY_PILLS,
+  TagTab,
+  ReorderableCard,
+  type Collection,
+  type Product,
+  type Storefront,
+} from "./pins";
 
 type PinterestBoard = { id: string; name: string };
 
@@ -141,7 +156,11 @@ function CreatePinWizard() {
     },
   });
 
-  const selectedProducts = products.filter((p) => selectedProductIds.includes(p.id));
+  // Follow the selection order (drag-reorder in step 3 writes it) so the
+  // first product stays the primary one at publish time.
+  const selectedProducts = selectedProductIds
+    .map((id) => products.find((p) => p.id === id))
+    .filter((p): p is Product => !!p);
   // Use the first selected product's storefront so the pin still links to a shop.
   const derivedStorefrontId = selectedProducts[0]?.storefront_id ?? storefrontId ?? "";
   const activeStorefront = storefronts.find((s) => s.id === derivedStorefrontId);
@@ -304,6 +323,8 @@ function CreatePinWizard() {
                 cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
               )
             }
+            reorder={setSelectedProductIds}
+            onNext={next}
           />
         )}
         {step === 4 && (
@@ -320,7 +341,9 @@ function CreatePinWizard() {
         )}
       </div>
 
-      {/* Sticky footer */}
+      {/* Sticky footer — step 3 renders its own attach-style footer
+          (Add more + Next), identical to the attach-products dialog. */}
+      {step !== 3 && (
       <div
         className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-5 py-3 backdrop-blur-xl"
         style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
@@ -349,6 +372,7 @@ function CreatePinWizard() {
           )}
         </div>
       </div>
+      )}
     </AppShell>
   );
 }
@@ -436,6 +460,33 @@ function StepDetails({
   titleInputRef: React.RefObject<HTMLInputElement | null>;
 }) {
   const [imgLoaded, setImgLoaded] = useState(false);
+  const descInputRef = useRef<HTMLTextAreaElement>(null);
+  // Suggestions dismissed once the user accepts them; re-shown if they clear
+  // the field again so the help is always one tap away.
+  const [titleUsed, setTitleUsed] = useState(false);
+  const [descUsed, setDescUsed] = useState(false);
+
+  // Reuse the same heuristic rewrite the Boost flow uses. A synthetic pin
+  // (seeded by the image URL for stable suffix rotation) feeds the helpers;
+  // with no board context they fall back to their generic anchors.
+  const pinLike = useMemo(
+    () => ({
+      id: imageUrl || "new-pin",
+      title,
+      description,
+      image_url: imageUrl || null,
+      collection_id: null,
+      created_at: "",
+    }),
+    [imageUrl, title, description],
+  );
+  const titleSuggestion = useMemo(() => suggestPinTitle(pinLike, null), [pinLike]);
+  const descSuggestion = useMemo(() => suggestPinDescription(pinLike, null), [pinLike]);
+
+  // Only offer a suggestion when it actually improves on what's typed.
+  const showTitleSug = !titleUsed && titleSuggestion.trim() !== title.trim();
+  const showDescSug = !descUsed && descSuggestion.trim() !== description.trim();
+
   return (
     <div className="space-y-5">
       <h2 className="font-display text-xl font-bold">Pin details</h2>
@@ -461,6 +512,7 @@ function StepDetails({
                 onChange={(e) => {
                   setTitle(e.target.value.slice(0, 100));
                   if (titleError) setTitleError(null);
+                  setTitleUsed(false);
                 }}
                 placeholder="Add a catchy title"
                 className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
@@ -469,18 +521,68 @@ function StepDetails({
             {titleError && (
               <p className="mt-1 text-xs font-medium text-destructive">{titleError}</p>
             )}
+            {showTitleSug && (
+              <AiSuggestion
+                text={titleSuggestion}
+                onUse={() => {
+                  setTitle(titleSuggestion.slice(0, 100));
+                  setTitleError(null);
+                  setTitleUsed(true);
+                  titleInputRef.current?.focus();
+                }}
+              />
+            )}
           </div>
-          <Field label="Description" hint={`${description.length}/500`}>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value.slice(0, 500))}
-              placeholder="Tell people about your pin"
-              rows={4}
-              className="w-full resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
-            />
-          </Field>
+          <div>
+            <Field label="Description" hint={`${description.length}/500`}>
+              <textarea
+                ref={descInputRef}
+                value={description}
+                onChange={(e) => {
+                  setDescription(e.target.value.slice(0, 500));
+                  setDescUsed(false);
+                }}
+                placeholder="Tell people about your pin"
+                rows={4}
+                className="w-full resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
+              />
+            </Field>
+            {showDescSug && (
+              <AiSuggestion
+                text={descSuggestion}
+                onUse={() => {
+                  setDescription(descSuggestion.slice(0, 500));
+                  setDescUsed(true);
+                  descInputRef.current?.focus();
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// A single AI-drafted value with a one-tap "Use" action. Accepting it fills
+// the field and removes the card (the parent flips its `used` flag).
+function AiSuggestion({ text, onUse }: { text: string; onUse: () => void }) {
+  return (
+    <div className="mt-2 flex items-start gap-2.5 rounded-xl border border-primary/25 bg-primary/5 p-2.5">
+      <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+          AI suggestion
+        </p>
+        <p className="mt-0.5 text-sm leading-snug text-foreground/90">{text}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onUse}
+        className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 active:scale-[0.97]"
+      >
+        Use
+      </button>
     </div>
   );
 }
@@ -494,6 +596,8 @@ function StepProducts({
   products,
   selectedIds,
   toggle,
+  reorder,
+  onNext,
 }: {
   imageUrl: string;
   title: string;
@@ -503,6 +607,8 @@ function StepProducts({
   products: Product[];
   selectedIds: string[];
   toggle: (id: string) => void;
+  reorder: (ids: string[]) => void;
+  onNext: () => void;
 }) {
   const qc = useQueryClient();
   const runVisualSearch = useServerFn(visualSearchImage);
@@ -510,12 +616,29 @@ function StepProducts({
   const [manualUrl, setManualUrl] = useState("");
   const [productUrlError, setProductUrlError] = useState<string | null>(null);
   const manualUrlInputRef = useRef<HTMLInputElement>(null);
-  const [previewLoaded, setPreviewLoaded] = useState(false);
   // Keyed by link (stable identity for a progressive-rendering match),
   // not index — the real storefront_products row id once auto-inserted.
   const [aiProductIds, setAiProductIds] = useState<Record<string, string>>({});
   const [manualProductIds, setManualProductIds] = useState<Set<string>>(new Set());
   const mountedRef = useRef(true);
+
+  // Attach-flow UI state — mirrors the single-pin attach dialog exactly.
+  // Manual entry lives in the "Add more" sheet, never inline on the page;
+  // `showCollection` swaps in the full-screen Add-from-Collection flow.
+  const [showAddMore, setShowAddMore] = useState(false);
+  const [showCollection, setShowCollection] = useState(false);
+  // Active product-tag tab (null = "All") + static category pills.
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeCategoryPill, setActiveCategoryPill] = useState<(typeof CATEGORY_PILLS)[number]>(
+    CATEGORY_PILLS[0],
+  );
+  // Explicit display order of the AI match grid, driven by the inline drag.
+  const [aiOrder, setAiOrder] = useState<string[]>([]);
+
+  // Scroll-linked morph: the big pin preview shrinks/fades/lifts out of the
+  // way as the results scroll down, and expands back on scroll up. This page
+  // scrolls the window (no modal container), so no ref is passed.
+  const morph = useScrollMorph(undefined, { heroMaxHeight: 208 });
   // Guards against double-inserting the same suggestion — plain ref (not
   // state) since it only needs to block a duplicate call, never render.
   const insertingLinksRef = useRef<Set<string>>(new Set());
@@ -527,11 +650,7 @@ function StepProducts({
     };
   }, []);
 
-  const {
-    data: aiData,
-    isFetching: aiLoading,
-    refetch: refetchAI,
-  } = useQuery({
+  const { data: aiData, isFetching: aiLoading } = useQuery({
     // title/description ride along to the server fn but aren't used by the
     // actual search (it only ever searches by imageUrl) — keeping them out
     // of the key means editing the title text can't trigger a redundant
@@ -560,13 +679,117 @@ function StepProducts({
     setAiProductIds({});
     setConfirmedByLink(new Map());
     insertingLinksRef.current = new Set();
+    setAiOrder([]);
+    setActiveTag(null);
   }, [aiData]);
+
+  // Full-screen scan experience shown while the visual search runs — same as
+  // the attach-products dialog. It resolves to `found` (brief success beat,
+  // then auto-dismiss to the matches) or `empty` (points the user at manual
+  // entry). `scanAck` = the overlay has been dismissed (auto or by tap).
+  const [scanAck, setScanAck] = useState(false);
+  // Revisiting this step with the search already cached — no scan to show.
+  useEffect(() => {
+    if (!aiLoading && aiData) setScanAck(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const scanPhase: ScanPhase | null = scanAck
+    ? null
+    : aiLoading
+      ? "scanning"
+      : suggestions.length > 0
+        ? "found"
+        : "empty";
+  // Once matches are in, hold the success beat briefly, then reveal them.
+  useEffect(() => {
+    if (scanPhase !== "found") return;
+    const t = setTimeout(() => setScanAck(true), 1000);
+    return () => clearTimeout(t);
+  }, [scanPhase]);
 
   const checkedAI = new Set<string>(
     Object.entries(aiProductIds)
       .filter(([, id]) => selectedIds.includes(id))
       .map(([link]) => link),
   );
+
+  // The single best earning rate across the matched retailers — headlines the
+  // results ("earn up to Y% per sale") so the value is obvious at a glance.
+  const topCommission = suggestions.length
+    ? Math.max(...suggestions.map((s) => estimateCommissionPct(s.source)))
+    : 0;
+
+  // Product-tag tabs (from object detection). Unique tags in first-seen order,
+  // each with its match count. Tabs only show when detection produced ≥2
+  // distinct components; otherwise the grid is just one list.
+  const tagByLink = useMemo(
+    () => new Map(suggestions.map((s) => [s.link, s.tag] as const)),
+    [suggestions],
+  );
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of suggestions) if (s.tag) m.set(s.tag, (m.get(s.tag) ?? 0) + 1);
+    return m;
+  }, [suggestions]);
+  const tags = useMemo(() => [...tagCounts.keys()], [tagCounts]);
+  // Keep the active tab valid as results change.
+  useEffect(() => {
+    if (activeTag && !tagCounts.has(activeTag)) setActiveTag(null);
+  }, [activeTag, tagCounts]);
+
+  // Inline drag-reorder of the found-products grid, driven by `aiOrder`.
+  const orderedAiLinks = useMemo(() => {
+    const rank = new Map(aiOrder.map((l, i) => [l, i]));
+    return suggestions
+      .map((s) => s.link)
+      .sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
+  }, [suggestions, aiOrder]);
+  const visibleAiLinks = useMemo(
+    () =>
+      activeTag ? orderedAiLinks.filter((l) => tagByLink.get(l) === activeTag) : orderedAiLinks,
+    [activeTag, orderedAiLinks, tagByLink],
+  );
+  const onAiReorder = (links: string[]) => {
+    setAiOrder(links);
+    // Mirror the grid order into the wizard's selection so the first product
+    // stays the primary one at publish time.
+    const aiIds = links
+      .map((l) => aiProductIds[l])
+      .filter((id): id is string => !!id && selectedIds.includes(id));
+    const rest = selectedIds.filter((id) => !aiIds.includes(id));
+    reorder([...aiIds, ...rest]);
+  };
+
+  // Products offered by the Add-from-Collection flow — same storefront rule
+  // as the attach dialog.
+  const storeProducts = useMemo(
+    () =>
+      products.filter((p) => !preferredStorefrontId || p.storefront_id === preferredStorefrontId),
+    [products, preferredStorefrontId],
+  );
+
+  // Pick an existing collection product from the "Add more" sheet — mirror it
+  // into `manualProductIds` so it surfaces in the main grid, and toggle it.
+  const toggleCollectionProduct = (id: string) => {
+    setManualProductIds((prev) => new Set(prev).add(id));
+    toggle(id);
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.trim()) setManualUrl(text.trim());
+      else toast.error("Clipboard is empty");
+    } catch {
+      toast.error("Couldn't read clipboard — paste manually");
+    }
+  };
+
+  // Everything currently selected, in selection order — the sheet's reorder
+  // list reads from this and writes back via `reorder`.
+  const selectedRows = selectedIds
+    .map((id) => products.find((p) => p.id === id))
+    .filter((p): p is Product => !!p);
 
   // Auto-inserts one confirmed-available suggestion as a real
   // storefront_product — same "add every AI match automatically" behavior
@@ -693,156 +916,420 @@ function StepProducts({
   });
 
   return (
-    <div className="space-y-6">
-      {/* Visual scan preview */}
-      {imageUrl && (
-        <div className="overflow-hidden rounded-2xl border border-border bg-surface-2/40">
-          <div className="relative mx-auto aspect-[4/5] max-h-72 w-full">
-            <img
-              key={imageUrl}
-              src={imageUrl}
-              alt=""
-              loading="lazy"
-              onLoad={() => setPreviewLoaded(true)}
-              className={`absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 ${
-                previewLoaded ? "opacity-100" : ""
-              }`}
-            />
-            {aiLoading && suggestions.length === 0 && (
-              <>
-                <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
-                <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
-              </>
-            )}
-            <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-              {aiLoading && suggestions.length === 0 ? (
+    <>
+      {/* Full-screen scan overlay while the visual search runs. */}
+      <AnimatePresence>
+        {scanPhase && (
+          <PinScanOverlay
+            imageUrl={imageUrl || null}
+            phase={scanPhase}
+            matchCount={suggestions.length}
+            onContinue={() => {
+              // No matches → land on the step with the Add-more sheet already
+              // open so they can paste a link or pick from a collection.
+              setScanAck(true);
+              setShowAddMore(true);
+            }}
+            onSkip={() => {
+              setScanAck(true);
+              setShowAddMore(true);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <div>
+        {/* "Visual match" label — fades out with the hero as you scroll. */}
+        <motion.div
+          style={{ opacity: morph.heroOpacity }}
+          className="mb-2 flex items-center gap-1.5"
+        >
+          <Sparkles className="h-3 w-3 shrink-0 text-primary" />
+          <span className="truncate text-[10px] font-semibold uppercase tracking-wide text-primary">
+            {aiLoading && suggestions.length === 0 ? "Scanning pin…" : "Visual match"}
+          </span>
+        </motion.div>
+
+        {/* Visual scan preview (big pin with scanning bar). Its reserved
+            height collapses and the image shrinks/fades/lifts as the user
+            scrolls down — and reverses on scroll up. */}
+        {imageUrl && (
+          <motion.div
+            style={{ height: morph.heroHeight, opacity: morph.heroOpacity }}
+            className="flex items-start justify-center overflow-hidden"
+          >
+            {/* The box hugs the pin: image sets its own width from the box
+                height, so it fills edge-to-edge with no letterboxing. */}
+            <motion.div
+              style={{ scale: morph.heroScale, y: morph.heroY }}
+              className="relative h-full origin-top overflow-hidden rounded-2xl border border-border shadow-sm"
+            >
+              <img src={imageUrl} alt="" className="h-full w-auto max-w-full object-cover" />
+              {aiLoading && suggestions.length === 0 && (
                 <>
-                  <Loader2 className="h-3 w-3 animate-spin" /> Visual search…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-3 w-3" /> {suggestions.length} matches
+                  <span className="pointer-events-none absolute inset-x-0 top-0 h-24 animate-scan bg-gradient-to-b from-primary/60 via-primary/20 to-transparent" />
+                  <span className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-primary/50" />
                 </>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Manual link */}
-      <div>
-        <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Product link
-        </label>
-        <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-input bg-background px-3 py-2.5">
-          <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <input
-            ref={manualUrlInputRef}
-            type="url"
-            value={manualUrl}
-            onChange={(e) => {
-              setManualUrl(e.target.value);
-              if (productUrlError) setProductUrlError(null);
-            }}
-            placeholder="Paste an affiliate link…"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-          />
-        </div>
-        {productUrlError && (
-          <p className="mt-1 text-xs font-medium text-destructive">{productUrlError}</p>
+            </motion.div>
+          </motion.div>
         )}
-        <button
-          type="button"
-          onClick={() => addProduct.mutate()}
-          disabled={addProduct.isPending || !manualUrl.trim()}
-          className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/15 disabled:opacity-50"
-        >
-          {addProduct.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Plus className="h-4 w-4" />
-          )}
-          Add product
-        </button>
-      </div>
 
-      {/* Our Recommendation */}
-      <div>
-        <div className="flex items-center justify-between">
-          <h5 className="flex items-center gap-1.5 text-sm font-semibold">
-            <Wand2 className="h-4 w-4 text-primary" />
-            Our Recommendation
-          </h5>
-          <div className="flex items-center gap-2">
-            {suggestions.length > 0 && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                {checkedAI.size} picked
-              </span>
-            )}
-            <button
-              onClick={() => refetchAI()}
-              disabled={aiLoading}
-              className="rounded-full bg-surface-2 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground disabled:opacity-50"
-            >
-              {aiLoading ? "Scanning…" : "Retry"}
-            </button>
-          </div>
-        </div>
+        {/* Results — manual entry lives in the "Add more" sheet, never
+            inline here. */}
         {aiLoading && suggestions.length === 0 ? (
-          <div className="mt-3">
+          <div className="mt-6">
             <EducationalLoader label="Finding matching products…" hints={HINTS.createScan} />
           </div>
         ) : suggestions.length === 0 ? (
-          <p className="mt-3 rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-xs text-muted-foreground">
-            No matching products found.
-          </p>
+          <div className="mt-6 rounded-2xl border border-dashed border-border bg-surface-2/40 p-6 text-center">
+            <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-amber-500/10 text-amber-600">
+              <Sparkles className="h-5 w-5" />
+            </span>
+            <p className="mt-3 text-sm font-semibold">No matching products found</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Tap <span className="font-semibold text-primary">Add more</span> below to paste a
+              link or pick from a collection.
+            </p>
+          </div>
         ) : (
-          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            {suggestions.map((s) => (
-              <ProgressiveSuggestionCard
-                key={s.link}
-                match={s}
-                selected={checkedAI.has(s.link)}
-                onToggle={() => toggleAI(s.link)}
-                onSettled={handleSuggestionSettled}
-              />
-            ))}
+          <>
+            {/* Earnings-led header — centred and prominent */}
+            <div className="mt-6 text-center">
+              <h5 className="font-display text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl">
+                Found {suggestions.length} product{suggestions.length === 1 ? "" : "s"}
+              </h5>
+              <p className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5 text-base font-medium text-muted-foreground">
+                Earn upto
+                <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-3 py-0.5 text-base font-extrabold text-emerald-600">
+                  {topCommission}%
+                </span>
+                per sale
+              </p>
+            </div>
+
+            {/* Static category pills. */}
+            <div className="no-scrollbar mt-4 -mx-1 flex items-center gap-2 overflow-x-auto px-1">
+              {CATEGORY_PILLS.map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setActiveCategoryPill(label)}
+                  className={`inline-flex shrink-0 items-center rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
+                    activeCategoryPill === label
+                      ? "bg-gradient-primary text-primary-foreground shadow-glow"
+                      : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Product-tag tabs — one per detected component. Below the pin,
+                above the products. Only shown when detection found ≥2. */}
+            {tags.length >= 2 && (
+              <div className="no-scrollbar mt-4 -mx-1 flex items-center gap-2 overflow-x-auto px-1">
+                <TagTab
+                  label="All"
+                  count={suggestions.length}
+                  active={activeTag === null}
+                  onClick={() => setActiveTag(null)}
+                />
+                {tags.map((t) => (
+                  <TagTab
+                    key={t}
+                    label={t}
+                    count={tagCounts.get(t) ?? 0}
+                    active={activeTag === t}
+                    onClick={() => setActiveTag(t)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Drag any card by its ⠿ handle to rearrange (All tab only);
+                tapping elsewhere selects/deselects it. */}
+            {activeTag === null ? (
+              <Reorder.Group
+                as="div"
+                axis="y"
+                values={orderedAiLinks}
+                onReorder={onAiReorder}
+                className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3"
+              >
+                {orderedAiLinks.map((link) => {
+                  const s = suggestions.find((m) => m.link === link);
+                  if (!s) return null;
+                  return (
+                    <ReorderableCard key={link} value={link}>
+                      <ProgressiveSuggestionCard
+                        match={s}
+                        selected={checkedAI.has(link)}
+                        onToggle={() => toggleAI(link)}
+                        onSettled={handleSuggestionSettled}
+                      />
+                    </ReorderableCard>
+                  );
+                })}
+              </Reorder.Group>
+            ) : (
+              <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                {visibleAiLinks.map((link) => {
+                  const s = suggestions.find((m) => m.link === link);
+                  if (!s) return null;
+                  return (
+                    <ProgressiveSuggestionCard
+                      key={link}
+                      match={s}
+                      selected={checkedAI.has(link)}
+                      onToggle={() => toggleAI(link)}
+                      onSettled={handleSuggestionSettled}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Manually-added products — no heading; they simply join the grid. */}
+        {manualProductIds.size > 0 && (
+          <div className="mt-4">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              {products
+                .filter((p) => manualProductIds.has(p.id))
+                .map((p) => (
+                  <SuggestionCard
+                    key={p.id}
+                    title={p.title}
+                    thumbnail={p.image_url}
+                    source={hostBrand(p.affiliate_url)}
+                    link={p.affiliate_url}
+                    price={realProductPrice(p.price_cents)}
+                    commissionPct={p.commission_pct}
+                    selected={selectedIds.includes(p.id)}
+                    onToggle={() => toggle(p.id)}
+                  />
+                ))}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Products */}
-      {manualProductIds.size > 0 && (
-        <div>
-          <div className="flex items-center justify-between">
-            <h5 className="flex items-center gap-1.5 text-sm font-semibold">
-              <Store className="h-4 w-4 text-primary" />
-              Products
-            </h5>
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-              {manualProductIds.size} added
-            </span>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            {products
-              .filter((p) => manualProductIds.has(p.id))
-              .map((p) => (
-                <SuggestionCard
-                  key={p.id}
-                  title={p.title}
-                  thumbnail={p.image_url}
-                  source={hostBrand(p.affiliate_url)}
-                  link={p.affiliate_url}
-                  price={realProductPrice(p.price_cents)}
-                  commissionPct={p.commission_pct}
-                  selected={selectedIds.includes(p.id)}
-                  onToggle={() => toggle(p.id)}
-                />
-              ))}
-          </div>
+      {/* Sticky footer — Add more (outline) + Next (filled), same as the
+          attach-products dialog. */}
+      <div
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 px-5 py-3 backdrop-blur-xl"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
+        <div className="mx-auto flex max-w-2xl items-center gap-3">
+          <button
+            onClick={() => {
+              setShowCollection(false);
+              setShowAddMore(true);
+            }}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-2xl border-2 border-primary bg-surface px-4 py-3 text-sm font-bold text-primary transition active:scale-[0.98]"
+          >
+            <Plus className="h-4 w-4" /> Add more
+          </button>
+          <button
+            onClick={onNext}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98]"
+          >
+            Next{selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}{" "}
+            <ArrowRight className="h-4 w-4" />
+          </button>
         </div>
-      )}
-    </div>
+      </div>
+
+      {/* "Add more" bottom sheet — paste a link manually, or pick from a
+          collection. Opened from the footer or after a no-match scan. */}
+      <AnimatePresence>
+        {showAddMore && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[55] flex items-end justify-center bg-background/60 backdrop-blur-sm sm:items-center sm:p-4"
+            onClick={() => setShowAddMore(false)}
+          >
+            <motion.div
+              onClick={(e) => e.stopPropagation()}
+              initial={{ y: 40, opacity: 0.6 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 380, damping: 34 }}
+              className="w-full max-w-2xl rounded-t-3xl border border-border bg-surface p-5 shadow-elevate sm:rounded-3xl"
+              style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+            >
+              <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-border" />
+              <h3 className="font-display text-lg font-bold">Add products</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Paste an affiliate link, or pick a product from your collection.
+              </p>
+
+              {/* Paste a link */}
+              <div className="mt-4 flex items-center gap-2">
+                <div
+                  className={`flex flex-1 items-center gap-2 rounded-2xl border bg-background px-3 py-3 ${
+                    productUrlError ? "border-rose-400" : "border-input"
+                  }`}
+                >
+                  <Link2 className="h-4 w-4 shrink-0 text-primary" />
+                  <input
+                    ref={manualUrlInputRef}
+                    type="url"
+                    value={manualUrl}
+                    onChange={(e) => {
+                      setManualUrl(e.target.value);
+                      if (productUrlError) setProductUrlError(null);
+                    }}
+                    placeholder="Paste more links"
+                    className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={pasteFromClipboard}
+                  aria-label="Paste from clipboard"
+                  className="grid h-[46px] w-[46px] shrink-0 place-items-center rounded-2xl bg-emerald-500 text-white shadow-sm transition active:scale-95"
+                >
+                  <ClipboardPaste className="h-5 w-5" />
+                </button>
+              </div>
+              {productUrlError && <p className="mt-1.5 text-xs text-rose-500">{productUrlError}</p>}
+              {/* Only appears once there's a link to add. */}
+              {manualUrl.trim() && (
+                <button
+                  type="button"
+                  onClick={() => addProduct.mutate()}
+                  disabled={addProduct.isPending}
+                  className="mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98] disabled:opacity-50"
+                >
+                  {addProduct.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
+                  Add link
+                </button>
+              )}
+
+              {/* divider */}
+              <div className="my-4 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                <span className="h-px flex-1 bg-border" /> or{" "}
+                <span className="h-px flex-1 bg-border" />
+              </div>
+
+              {/* Add from collection — full-screen: a Collections grid,
+                  then that collection's products. */}
+              <AddFromCollectionButton onClick={() => setShowCollection(true)} />
+
+              {showCollection && (
+                <CollectionAddFlow
+                  products={storeProducts}
+                  pickedIds={new Set(selectedIds)}
+                  onTogglePicked={toggleCollectionProduct}
+                  onExit={() => setShowCollection(false)}
+                />
+              )}
+
+              {/* Everything picked so far — reorder by dragging a row, or
+                  remove with ✕. */}
+              {selectedRows.length > 0 && (
+                <div className="mt-5">
+                  <p className="mb-2 text-xs font-semibold text-muted-foreground">
+                    {selectedRows.length} selected
+                  </p>
+                  <Reorder.Group
+                    as="div"
+                    axis="y"
+                    values={selectedIds}
+                    onReorder={reorder}
+                    className="flex max-h-[34vh] flex-col gap-2 overflow-y-auto"
+                  >
+                    {selectedRows.map((p) => {
+                      const amount = p.price_cents != null ? p.price_cents / 100 : null;
+                      const pct =
+                        p.commission_pct ?? estimateCommissionPct(hostBrand(p.affiliate_url));
+                      const earn = amount != null ? Math.round(amount * (pct / 100)) : null;
+                      return (
+                        <Reorder.Item
+                          as="div"
+                          key={p.id}
+                          value={p.id}
+                          whileDrag={{ scale: 1.02, zIndex: 10 }}
+                          transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                          className="flex touch-none select-none items-center gap-2.5 rounded-2xl border border-border bg-surface p-2 shadow-sm active:cursor-grabbing"
+                        >
+                          <span className="grid h-7 w-6 shrink-0 cursor-grab place-items-center text-muted-foreground/60 active:cursor-grabbing">
+                            <Grip className="h-4 w-4" />
+                          </span>
+                          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-xl bg-surface-2">
+                            {p.image_url ? (
+                              <img src={p.image_url} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="grid h-full w-full place-items-center text-muted-foreground">
+                                <ImageIcon className="h-4 w-4" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                              {hostBrand(p.affiliate_url)}
+                            </p>
+                            <p className="truncate text-sm font-semibold leading-tight">
+                              {p.title}
+                            </p>
+                            <div className="mt-0.5 flex items-center gap-2">
+                              {amount != null && (
+                                <span className="text-xs font-bold">
+                                  ₹{amount.toLocaleString("en-IN")}
+                                </span>
+                              )}
+                              {earn != null && (
+                                <span className="text-[11px] font-bold text-emerald-600">
+                                  Earn ₹{earn}/sale
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggle(p.id);
+                            }}
+                            aria-label="Remove"
+                            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground transition hover:bg-surface-2 hover:text-foreground"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </Reorder.Item>
+                      );
+                    })}
+                  </Reorder.Group>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddMore(false);
+                  onNext();
+                }}
+                className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-gradient-primary px-4 py-3.5 text-sm font-bold text-primary-foreground shadow-glow transition active:scale-[0.98]"
+              >
+                Continue{selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

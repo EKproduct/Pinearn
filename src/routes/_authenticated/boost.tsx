@@ -1,22 +1,28 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   ArrowRight,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
+  Compass,
+  Hand,
   ImagePlus,
   Info,
   LayoutGrid,
   Link2,
+  MousePointerClick,
+  PencilLine,
   RefreshCw,
   Rocket,
   Sparkles,
+  TrendingUp,
   Type,
+  Undo2,
   UserCheck,
   X,
-  Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,26 +54,11 @@ export const Route = createFileRoute("/_authenticated/boost")({
   component: BoostPinsPage,
 });
 
-const CTA_LABELS: Record<SubScoreKey, string> = {
-  pinSeo: "Fix Pin SEO",
-  boardStructure: "Fix Boards",
-  profile: "Complete Profile",
-  freshness: "Add Fresh Pins",
-};
-
 const SUB_ICONS: Record<SubScoreKey, typeof Type> = {
   pinSeo: Type,
   boardStructure: LayoutGrid,
   profile: UserCheck,
   freshness: CalendarClock,
-};
-
-// What fixing each area is worth, in plain creator language.
-const IMPACT_COPY: Record<SubScoreKey, string> = {
-  pinSeo: "Better titles & descriptions = more search reach",
-  boardStructure: "Clear boards tell Pinterest what to rank you for",
-  profile: "Complete profiles get distributed further",
-  freshness: "Fresh pins are what the algorithm rewards most",
 };
 
 function BoostPinsPage() {
@@ -131,10 +122,13 @@ function BoostPinsPage() {
     () => (report ? [...report.subScores].sort((a, b) => b.potentialGain - a.potentialGain) : []),
     [report],
   );
-  const worst = report?.worstKey ? report.subScores.find((s) => s.key === report.worstKey)! : null;
-
   return (
-    <AppShell title="Boost Pins" subtitle="One score. Everything holding your reach back.">
+    <AppShell
+      title="Boost Pins"
+      subtitle="One score. Everything holding your reach back."
+      backButton
+      backTo="/dashboard"
+    >
       <div className="mx-auto max-w-2xl">
         <AnimatePresence mode="wait">
           {analyzing ? (
@@ -159,7 +153,7 @@ function BoostPinsPage() {
               transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
             >
               {/* ---- Minimal hero: score · one line · one action ---- */}
-              <div className="relative overflow-hidden rounded-[2rem] border border-border/70 bg-gradient-to-b from-rose-50/70 via-surface to-surface p-8 shadow-elevate sm:p-10">
+              <div className="relative overflow-hidden rounded-[2rem] border border-border/70 bg-gradient-to-b from-rose-50/70 via-surface to-surface p-6 shadow-elevate sm:p-7">
                 <div
                   aria-hidden
                   className="pointer-events-none absolute -top-28 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/10 blur-3xl"
@@ -176,26 +170,10 @@ function BoostPinsPage() {
 
                 <div className="relative flex flex-col items-center text-center">
                   <ScoreRing score={report.overall} from={animateFrom} />
-
-                  <p className="mt-6 max-w-[24ch] text-balance font-display text-lg font-semibold leading-snug tracking-tight text-foreground/90">
-                    {report.diagnosis}
-                  </p>
-
-                  {worst && (
-                    <motion.button
-                      whileTap={{ scale: 0.97 }}
-                      onClick={() => setBriefingKey(worst.key)}
-                      className="mt-7 inline-flex items-center gap-2.5 rounded-full bg-gradient-primary px-6 py-3.5 text-sm font-extrabold text-primary-foreground shadow-glow transition hover:opacity-95"
-                    >
-                      <Zap className="h-4 w-4" fill="currentColor" />
-                      {CTA_LABELS[worst.key]}
-                      <span className="rounded-full bg-white/25 px-2 py-0.5 text-[11px] font-bold">
-                        +{worst.potentialGain} pts
-                      </span>
-                    </motion.button>
-                  )}
                 </div>
               </div>
+
+              <HowScoringWorks />
 
               {/* ---- One prioritized plan (grid + list merged) ---- */}
               <div className="mt-6">
@@ -209,8 +187,6 @@ function BoostPinsPage() {
                   ))}
                 </div>
               </div>
-
-              <HowScoringWorks />
             </motion.div>
           )}
         </AnimatePresence>
@@ -273,27 +249,28 @@ function missingItemsFor(
   }
 }
 
-// Plain-language steps of what the fix flow will actually do, per area.
-const HOW_STEPS: Record<SubScoreKey, string[]> = {
+// The fix flow shown as three glanceable icon steps instead of sentences.
+type HowStep = { icon: typeof Sparkles; label: string };
+const HOW_STEPS: Record<SubScoreKey, HowStep[]> = {
   pinSeo: [
-    "We draft a stronger title & description for every weak pin.",
-    "Swipe right to apply it, or tap Edit to tweak it first.",
-    "Undo any change instantly — nothing is permanent.",
+    { icon: Sparkles, label: "AI drafts titles & descriptions" },
+    { icon: Hand, label: "Swipe to apply" },
+    { icon: TrendingUp, label: "Grow reach & rank" },
   ],
   boardStructure: [
-    "We suggest a clear name & description from what you've pinned.",
-    "Swipe right to apply, or tap Edit to make it yours.",
-    "Undo any change instantly — nothing is permanent.",
+    { icon: Sparkles, label: "We suggest" },
+    { icon: Hand, label: "Swipe to apply" },
+    { icon: Undo2, label: "Undo anytime" },
   ],
   profile: [
-    "We take you straight to each missing field.",
-    "Fill it in — the whole thing takes under a minute.",
-    "Your Boost Score climbs the moment you save.",
+    { icon: MousePointerClick, label: "Jump to field" },
+    { icon: PencilLine, label: "Fill it in" },
+    { icon: TrendingUp, label: "Score climbs" },
   ],
   freshness: [
-    "We point you to the boards that have gone quiet.",
-    "Add one fresh pin to wake a board back up.",
-    "Fresh pins are what Pinterest rewards most.",
+    { icon: Compass, label: "Find quiet boards" },
+    { icon: ImagePlus, label: "Add a pin" },
+    { icon: TrendingUp, label: "Reach grows" },
   ],
 };
 
@@ -313,8 +290,23 @@ function FixBriefing({
   const tone = scoreTone(sub.score);
   const Icon = SUB_ICONS[sub.key];
   const items = missingItemsFor(sub.key, data, profileItems);
-  const shown = items.slice(0, 4);
+  const shown = items.slice(0, 6);
   const more = items.length - shown.length;
+
+  // Collapse the repetitive per-item notes into a ranked tally of problem
+  // types, so the same information reads as a visual breakdown, not a list.
+  const topIssues = useMemo(() => {
+    const tally = new Map<string, number>();
+    for (const it of items) {
+      for (const tag of it.note ? it.note.split(" · ") : []) {
+        tally.set(tag, (tally.get(tag) ?? 0) + 1);
+      }
+    }
+    return [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }, [items]);
+  // Bars only make sense when a problem actually repeats; otherwise (freshness,
+  // profile — every note unique) fall back to titled chips.
+  const useBars = topIssues.length > 0 && topIssues[0][1] >= 2;
 
   const container: Variants = {
     hidden: {},
@@ -384,54 +376,90 @@ function FixBriefing({
             </button>
           </motion.div>
 
-          {/* What's holding it back — the concrete failing items. */}
+          {/* What's holding it back — a hero count + visual problem breakdown. */}
           <motion.p
             variants={item}
-            className="mt-5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground"
+            className="mt-6 text-[11px] font-bold uppercase tracking-wide text-muted-foreground"
           >
             What's holding it back
           </motion.p>
-          <motion.p variants={item} className="mt-1 text-sm font-semibold">
-            {sub.failing} {sub.unit} need attention
-          </motion.p>
-          <motion.ul variants={container} className="mt-2.5 space-y-1.5">
-            {shown.map((m) => (
-              <motion.li
-                key={m.id}
-                variants={item}
-                className="flex items-start gap-2.5 rounded-xl bg-surface-2/50 px-3 py-2"
-              >
-                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{m.title}</p>
-                  {m.note && <p className="truncate text-[11px] text-muted-foreground">{m.note}</p>}
-                </div>
-              </motion.li>
-            ))}
-            {more > 0 && (
-              <motion.li variants={item} className="px-3 text-[11px] text-muted-foreground">
-                + {more} more
-              </motion.li>
-            )}
-          </motion.ul>
+          <motion.div variants={item} className="mt-2 flex items-end gap-2">
+            <span className={`font-display text-4xl font-black leading-none ${tone.text}`}>
+              {sub.failing}
+            </span>
+            <span className="pb-0.5 text-sm font-semibold text-muted-foreground">
+              {sub.unit} need attention
+            </span>
+          </motion.div>
 
-          {/* How we'll fix it — sets expectations for the flow ahead. */}
+          {useBars ? (
+            <motion.div variants={container} className="mt-4 space-y-2.5">
+              {topIssues.map(([label, count]) => (
+                <motion.div key={label} variants={item}>
+                  <div className="mb-1 flex items-center justify-between text-[11px] font-semibold">
+                    <span className="text-foreground/80">{label}</span>
+                    <span className="text-muted-foreground">{count}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
+                    <motion.div
+                      className="h-full rounded-full bg-amber-400"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.max(6, (count / sub.failing) * 100)}%` }}
+                      transition={{ duration: 0.6, delay: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                    />
+                  </div>
+                </motion.div>
+              ))}
+            </motion.div>
+          ) : (
+            <motion.div variants={container} className="mt-3 flex flex-wrap gap-1.5">
+              {shown.map((m) => (
+                <motion.span
+                  key={m.id}
+                  variants={item}
+                  className="max-w-full truncate rounded-full bg-surface-2/70 px-3 py-1.5 text-xs font-medium"
+                >
+                  {m.title}
+                </motion.span>
+              ))}
+              {more > 0 && (
+                <motion.span
+                  variants={item}
+                  className="rounded-full px-2 py-1.5 text-xs text-muted-foreground"
+                >
+                  +{more} more
+                </motion.span>
+              )}
+            </motion.div>
+          )}
+
+          {/* How we'll fix it — three glanceable steps, connected left to right. */}
           <motion.p
             variants={item}
-            className="mt-5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground"
+            className="mt-6 text-[11px] font-bold uppercase tracking-wide text-muted-foreground"
           >
             How we'll fix it
           </motion.p>
-          <motion.ol variants={container} className="mt-2.5 space-y-2.5">
+          <motion.div variants={container} className="mt-2.5 flex items-stretch gap-1">
             {HOW_STEPS[sub.key].map((step, i) => (
-              <motion.li key={i} variants={item} className="flex items-start gap-3">
-                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary/10 text-[11px] font-extrabold text-primary">
-                  {i + 1}
-                </span>
-                <p className="text-sm leading-snug text-foreground/85">{step}</p>
-              </motion.li>
+              <Fragment key={i}>
+                <motion.div
+                  variants={item}
+                  className="flex flex-1 flex-col items-center gap-1.5 rounded-2xl bg-surface-2/50 px-1.5 py-3 text-center"
+                >
+                  <span className="grid h-9 w-9 place-items-center rounded-full bg-primary/10 text-primary">
+                    <step.icon className="h-4 w-4" />
+                  </span>
+                  <span className="text-[11px] font-semibold leading-tight text-foreground/85">
+                    {step.label}
+                  </span>
+                </motion.div>
+                {i < HOW_STEPS[sub.key].length - 1 && (
+                  <ChevronRight className="h-4 w-4 shrink-0 self-center text-muted-foreground/40" />
+                )}
+              </Fragment>
             ))}
-          </motion.ol>
+          </motion.div>
 
           <motion.div variants={item} className="mt-6 flex flex-col gap-1.5">
             <button
@@ -506,78 +534,64 @@ function BoostRow({ sub, rank, onFix }: { sub: SubScore; rank: number; onFix: ()
   const Icon = SUB_ICONS[sub.key];
   const optimized = sub.score >= 100;
 
+  // Show points earned out of this area's max contribution to the overall
+  // score (its weight as points), e.g. Pin SEO at 20% → "7/35". The bar itself
+  // stays proportional to the raw percentage.
+  const totalPts = Math.round(SUB_SCORE_WEIGHTS[sub.key] * 100);
+  const earnedPts = Math.round(SUB_SCORE_WEIGHTS[sub.key] * sub.score);
+
   if (optimized) {
     return (
-      <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface/60 px-4 py-3.5">
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500">
-          <Icon className="h-[18px] w-[18px]" />
+      <div className="flex items-center gap-3.5 rounded-2xl border border-border bg-surface/60 px-4 py-4">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500">
+          <Icon className="h-5 w-5" />
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">{sub.label}</p>
-          <p className="text-[11px] text-muted-foreground">You're fully optimized here</p>
-        </div>
-        <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+        <p className="min-w-0 flex-1 truncate text-[15px] font-semibold">{sub.label}</p>
+        <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
       </div>
     );
   }
 
+  // Whole card is the action — tap anywhere to open that area's fix flow.
+  // Just the heading and its progress loader; ranking is shown by order and,
+  // for the top win, a subtle primary tint.
   const isTop = rank === 0;
   return (
-    <motion.div
+    <motion.button
+      type="button"
+      onClick={onFix}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.2 + rank * 0.06, duration: 0.3, ease: "easeOut" }}
-      className={`overflow-hidden rounded-2xl border ${
-        isTop ? "border-primary/40 bg-primary/5" : "border-border bg-surface"
+      className={`group flex w-full items-center gap-3.5 rounded-2xl border p-4 text-left transition active:scale-[0.99] ${
+        isTop
+          ? "border-primary/40 bg-primary/5 hover:bg-primary/[0.08]"
+          : "border-border bg-surface hover:bg-surface-2/60"
       }`}
     >
-      <div className="flex items-center gap-3 p-4">
-        <div
-          className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${tone.bg} ${tone.text}`}
-        >
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-sm font-semibold">{sub.label}</p>
-            {isTop && (
-              <span className="rounded-full bg-primary px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-primary-foreground">
-                Biggest win
-              </span>
-            )}
-            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-extrabold text-emerald-600">
-              +{sub.potentialGain} pts
-            </span>
+      <div
+        className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${tone.bg} ${tone.text}`}
+      >
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[15px] font-semibold">{sub.label}</p>
+        <div className="mt-2 flex items-center gap-2.5">
+          <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-2">
+            <motion.div
+              className={`h-full rounded-full ${tone.bar}`}
+              initial={false}
+              animate={{ width: `${sub.score}%` }}
+              transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+            />
           </div>
-          {/* score + mini bar */}
-          <div className="mt-1.5 flex items-center gap-2">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-2">
-              <motion.div
-                className={`h-full rounded-full ${tone.bar}`}
-                initial={false}
-                animate={{ width: `${sub.score}%` }}
-                transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
-              />
-            </div>
-            <span className={`text-xs font-extrabold tabular-nums ${tone.text}`}>{sub.score}%</span>
-          </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {sub.failing} {sub.unit} · {IMPACT_COPY[sub.key]}
-          </p>
+          <span className={`shrink-0 text-right text-xs font-extrabold tabular-nums ${tone.text}`}>
+            {earnedPts}/{totalPts} pts
+          </span>
         </div>
       </div>
-
-      {/* One red action per row — opens that area's fix flow. */}
-      <div className="border-t border-border/60 p-3">
-        <button
-          type="button"
-          onClick={onFix}
-          className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary py-2.5 text-sm font-bold text-primary-foreground shadow-sm transition hover:opacity-90 active:scale-[0.99]"
-        >
-          Fix now <ArrowRight className="h-4 w-4" />
-        </button>
-      </div>
-    </motion.div>
+      <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground/50 transition group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
+    </motion.button>
   );
 }
 
@@ -587,17 +601,17 @@ function HowScoringWorks() {
   const [open, setOpen] = useState(false);
   const keys: SubScoreKey[] = ["pinSeo", "boardStructure", "profile", "freshness"];
   return (
-    <div className="mt-6 rounded-2xl border border-border bg-surface">
+    <div className="mt-3 rounded-xl border border-border bg-surface">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-4 py-3.5 text-left"
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left"
         aria-expanded={open}
       >
-        <Info className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="flex-1 text-sm font-semibold">How your score works</span>
+        <Info className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="flex-1 text-xs font-semibold">How your score works</span>
         <ChevronDown
-          className={`h-4 w-4 text-muted-foreground transition ${open ? "rotate-180" : ""}`}
+          className={`h-3.5 w-3.5 text-muted-foreground transition ${open ? "rotate-180" : ""}`}
         />
       </button>
       <AnimatePresence>

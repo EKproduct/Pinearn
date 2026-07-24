@@ -328,6 +328,39 @@
   animation: marquee 32s linear infinite;
 }
 
+/* Seamless vertical auto-scroll for the pre-login pin wall. Each column's tiles
+   are rendered twice and every tile owns its trailing margin, so translating the
+   track -50% lands exactly on the copy — an endless drift with no visible seam.
+   Columns alternate up/down for a living, parallax Pinterest-wall feel. */
+@keyframes wall-up {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+@keyframes wall-down {
+  from {
+    transform: translateY(-50%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@utility animate-wall-up {
+  animation: wall-up 44s linear infinite;
+}
+@utility animate-wall-down {
+  animation: wall-down 44s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-wall-up,
+  .animate-wall-down {
+    animation: none;
+  }
+}
+
 /* Smooth anchor scrolling on the landing page — never under reduced motion. */
 @media (prefers-reduced-motion: no-preference) {
   html {

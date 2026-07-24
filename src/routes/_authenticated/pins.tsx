@@ -1344,7 +1344,7 @@ export function PinDetailDialog({
 // One found-product card, made draggable in place. The ⠿ handle is the only
 // drag trigger (dragListener off) so tapping the card still selects/deselects;
 // pressing the handle starts the reorder.
-function TagTab({
+export function TagTab({
   label,
   count,
   active,
@@ -1377,7 +1377,7 @@ function TagTab({
   );
 }
 
-function ReorderableCard({ value, children }: { value: string; children: React.ReactNode }) {
+export function ReorderableCard({ value, children }: { value: string; children: React.ReactNode }) {
   const controls = useDragControls();
   return (
     <Reorder.Item
