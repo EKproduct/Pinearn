@@ -307,6 +307,9 @@ function CreatePinWizard() {
             titleError={titleError}
             setTitleError={setTitleError}
             titleInputRef={titleInputRef}
+            boards={boards}
+            boardId={boardId}
+            setBoardId={setBoardId}
           />
         )}
         {step === 3 && (
@@ -449,6 +452,9 @@ function StepDetails({
   titleError,
   setTitleError,
   titleInputRef,
+  boards,
+  boardId,
+  setBoardId,
 }: {
   imageUrl: string;
   title: string;
@@ -458,6 +464,9 @@ function StepDetails({
   titleError: string | null;
   setTitleError: (v: string | null) => void;
   titleInputRef: React.RefObject<HTMLInputElement | null>;
+  boards: PinterestBoard[];
+  boardId: string;
+  setBoardId: (id: string) => void;
 }) {
   const [imgLoaded, setImgLoaded] = useState(false);
   const descInputRef = useRef<HTMLTextAreaElement>(null);
@@ -557,6 +566,38 @@ function StepDetails({
                 }}
               />
             )}
+          </div>
+
+          {/* Pick the Pinterest board here, alongside the details — the
+              review step shows the same picker, pre-filled with this choice. */}
+          <div>
+            <Field label="Pinterest board">
+              {boards.length === 0 ? (
+                <div className="space-y-2 rounded-xl border border-dashed border-border bg-surface-2/40 p-3">
+                  <p className="text-xs text-muted-foreground">
+                    No synced boards yet — sync your Pinterest boards from Storefront first.
+                  </p>
+                  <Link
+                    to="/storefront"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                  >
+                    Go to Storefront <ChevronRight className="h-3 w-3" />
+                  </Link>
+                </div>
+              ) : (
+                <select
+                  value={boardId}
+                  onChange={(e) => setBoardId(e.target.value)}
+                  className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
+                >
+                  {boards.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
           </div>
         </div>
       </div>

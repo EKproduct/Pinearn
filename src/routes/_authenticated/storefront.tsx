@@ -482,7 +482,7 @@ function StorefrontPage() {
 
   if (sfLoading) {
     return (
-      <AppShell title="My Store">
+      <AppShell title="My Store" backButton backTo="/dashboard">
         <SkeletonRows />
       </AppShell>
     );
@@ -490,7 +490,7 @@ function StorefrontPage() {
 
   if (!storefront) {
     return (
-      <AppShell title="My Store">
+      <AppShell title="My Store" backButton backTo="/dashboard">
         <div className="rounded-2xl border border-dashed border-border bg-surface/40 p-12 text-center">
           <p className="text-sm text-muted-foreground">
             Your storefront is being set up. Refresh in a moment.
@@ -507,6 +507,8 @@ function StorefrontPage() {
   return (
     <AppShell
       title="My Store"
+      backButton
+      backTo="/dashboard"
       inlineActions
       actions={
         <Link
