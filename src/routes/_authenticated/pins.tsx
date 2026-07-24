@@ -245,6 +245,8 @@ function PinsPage() {
     <AppShell
       title="Pins"
       subtitle="Browse pins by collection, then match each one to affiliate products."
+      backButton
+      backTo="/dashboard"
       actions={
         filtered.length > 0 &&
         (storefronts.length === 0 ? (

@@ -407,7 +407,12 @@ function Analytics() {
   const activeProduct = PRODUCT_DEFS.find((p) => p.id === activeProductId) ?? null;
 
   return (
-    <AppShell title="Analytics" subtitle="Traffic, conversions, and earnings.">
+    <AppShell
+      title="Analytics"
+      subtitle="Traffic, conversions, and earnings."
+      backButton
+      backTo="/dashboard"
+    >
       {/* Total earnings card */}
       <div className="rounded-3xl border border-border bg-surface p-5">
         <div className="flex items-start justify-between gap-3">
